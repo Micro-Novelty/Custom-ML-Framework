@@ -26,7 +26,7 @@ The Mathematical Formula That Acts as A Foundation for Nonlinear dynamic equilib
 KL Divergence is Used To Calculate sensitivity on How much the Logit is shifting from uniform logit.
 - Code Formula:
 ```math
-Kl divergence = np.sum(logit * np.log(logit)) - np.log(uniform_logit))
+Kl_divergence = np.sum(logit * np.log(logit)) - np.log(uniform_logit))
 ```
 From the code, This Version Of KL divergence was much more sensitive to How much it has diverged, using ``` log(uniform)``` tells the model how much it has diverged, This Formula was Proved to be more Numerically stable and Efficient At Calculating Divergence from uniformity.
 
@@ -35,7 +35,7 @@ Curvature Is Used to calculate the geometry curve of the logits and the curvatur
 
 - Code Formula:
 ```math 
-np.mean(np.abs(np.diff(np.diff(logit))))
+curvature = np.mean(np.abs(np.diff(np.diff(logit))))
 ```
 
 • From The Code formula, ```
