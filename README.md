@@ -22,7 +22,7 @@ The Mathematical Formula That Acts as A Foundation for Nonlinear dynamic equilib
 , and compare them directly with each Divergence formulas from the Meta Simulations and the Raw Logits.
 - Below is A Compact Explanation:
 
-1. KL Divergence:
+●. KL Divergence:
 KL Divergence is Used To Calculate sensitivity on How much the Logit is shifting from uniform logit.
 - Code Formula:
 ```math
@@ -30,7 +30,7 @@ Kl_divergence = np.sum(logit * np.log(logit)) - np.log(uniform_logit))
 ```
 From the code, This Version Of KL divergence was much more sensitive to How much it has diverged, using ``` log(uniform)``` tells the model how much it has diverged, This Formula was Proved to be more Numerically stable and Efficient At Calculating Divergence from uniformity.
 
-2. Curvature:
+●. Curvature:
 Curvature Is Used to calculate the geometry curve of the logits and the curvature of each Nested logit or Probabilities Simulation.
 
 - Code Formula:
@@ -40,6 +40,9 @@ curvature = np.mean(np.abs(np.diff(np.diff(logit))))
 
 • From The Code formula, ```
 numpy.mean()``` is used to calculate mean on logits itself directly. While For ```numpy.abs()``` itself is to turn each scalar inside the list to be an absolute value, so double differential scaling will be much easier and precisely accurate, the double ```numpy.diff()``` is used to calculate the differential value of each scalar inside that logit, double usage here is used to achieve precision higher.
+
+●. Nested Meta Simulations:
+Nested meta Simulations here Are A bunch of ```numpy.exp()``` scaling that exponentiate logits to see how the model can simulate logit by scaling it to predict how future logits looked like.
 
 
 
