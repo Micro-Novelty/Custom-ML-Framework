@@ -28,7 +28,7 @@ KL Divergence is Used To Calculate sensitivity on How much the Logit is shifting
 ```math
 Kl divergence = np.sum(logit * np.log(logit)) - np.log(uniform_logit))
 ```
-From the code, This Version Of KL divergence was much more sensitive to How much it has diverged, using ```math log(uniform)``` tells the model how much it has diverged, This Formula was Proved to be more Numerically stable and Efficient At Calculating Divergence from uniformity.
+From the code, This Version Of KL divergence was much more sensitive to How much it has diverged, using ``` log(uniform)``` tells the model how much it has diverged, This Formula was Proved to be more Numerically stable and Efficient At Calculating Divergence from uniformity.
 
 2. Curvature:
 Curvature Is Used to calculate the geometry curve of the logits and the curvature of each Nested logit or Probabilities Simulation.
@@ -38,7 +38,7 @@ Curvature Is Used to calculate the geometry curve of the logits and the curvatur
 np.mean(np.abs(np.diff(np.diff(logit))))
 ```
 
-• From The Code formula, ```math
+• From The Code formula, ```
 numpy.mean()``` is used to calculate mean on logits itself. 
 
 
