@@ -90,8 +90,8 @@ CellularImbrium Is a Hierarchical Tree that consist of two Networking Layer perc
 
 # Solo Development History By me (2025- Now):
 - 3 months Ago Foldernet Was successfully Made by me, for 2 months ive refined it to be a purposeful agent for my small game.
-- After FolderNet was created, i realized that conventional Transformer doesnt directly Work and fit with my FolderNet, And it also requires attention that works by using geometric optimization, FolderNet was then renamed to CellularNet.
-- EpsilonPolicy was made for the Agenys Policy that enables the Agent to Change its behavior by injecting a Stable exploration and exploitation with geometric optimization.
+- After FolderNet was created, i realized that conventional Transformer doesnt directly Work and fit with my FolderNet, since it was using Standard Lineae Q, K, V. So FolderNet requires attention that works by using geometric optimization, FolderNet was then renamed to CellularNet.
+- EpsilonPolicy was made for the Agents Policy that enables the Agent to Change its behavior by injecting a Stable exploration and exploitation with geometric optimization.
 - LafoldBot And geometrical seeker was later made to Help EpsitronTransformer and EpsilonPolicy, It used as a meta helper for Development.
 - Days Ago cellularImbrium Was made to execute Many of that Modules to cooperate and form a stable dynamic hieraichal tree.
 
