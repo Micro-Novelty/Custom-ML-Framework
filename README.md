@@ -88,10 +88,10 @@ geometricalseeker is a custom helper seekers that seeks stable divergence, conv,
 
 CellularImbrium Is a Hierarchical Tree that consist of two Networking Layer perceptron and training functions used to determine if a function should return a value, or scalars or not, by using dynamic lyapunov stability, it ensures that the equation remains stable per iteration and score >= stable_equilibrium, the other Functions contains a stable reprogramming function used to reprogram scalars based on the iteration scores, there is also special Nodes that contains A function that calculates all three special nodes that was acquired through hitcins moduli space equation.
 
-# Private Development History By me (2025- Now):
-- 3 months Ago Foldernet Was successfully Made by me, for 2 months ive refined it to be a purposeful agent
-- After FolderNet was created, i realized that conventional Transformer doesnt directly Work and fit with my FolderNet, And it also requires attention that works by using geometric optimization.
-- EpsilonPolicy was made to Make Policy that enables the Agent to Change its behavior by injecting a Stable exploration and exploitation with geometric optimization.
+# Solo Development History By me (2025- Now):
+- 3 months Ago Foldernet Was successfully Made by me, for 2 months ive refined it to be a purposeful agent for my small game.
+- After FolderNet was created, i realized that conventional Transformer doesnt directly Work and fit with my FolderNet, And it also requires attention that works by using geometric optimization, FolderNet was then renamed to CellularNet.
+- EpsilonPolicy was made for the Agenys Policy that enables the Agent to Change its behavior by injecting a Stable exploration and exploitation with geometric optimization.
 - LafoldBot And geometrical seeker was later made to Help EpsitronTransformer and EpsilonPolicy, It used as a meta helper for Development.
 - Days Ago cellularImbrium Was made to execute Many of that Modules to cooperate and form a stable dynamic hieraichal tree.
 
