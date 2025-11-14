@@ -1,5 +1,5 @@
 # Custom-Transformer-For-ML-Framework
-This Repository Is Private For Now, Since This Framework Was Purely Custom Made by me And I Have conducted some test of It, although, This repository contains the Whole Block of cellularNet, Epsitron Transformer, And EpsilonPolicy
+This Framework Was Purely Custom Made by me And I Have conducted some analytical test of It (lyapunov stability test, exploration vs exploitation), although, This repository contains the Whole Block of cellularNet, Epsitron Transformer, And EpsilonPolicy, Hope you understand the rigorous math. :)
 Creator = Anonimity X.11.
 
 # Mathematical Foundation And Expression
