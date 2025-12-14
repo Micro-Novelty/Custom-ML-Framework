@@ -1,0 +1,1804 @@
+class CellularAutomataNet:
+	def __init__(self, input=20, layers=[20, 80, 50], output=20):
+		self.input = input
+		self.output = output
+		self.layers =  [input] + layers + [output]
+		self.alpha = 0.1
+		self.beta = 0.1
+		self.entropy_coef = 0.1
+		self.superlinear_lr = 0.01
+		self.threshold = 0.5
+		self.weight_manifold = []
+		self.bias_manifold = []
+		self.accumulative_probs = 0
+		
+		self.attn = EpsitronTransformer(0.004, 8, 1.25)     
+		self.epsilon = EpsilonPolicy(1.25, 0.075)   
+		self.lafold = LaFoldBot(1.5)
+		self.seeker = GeometricalSeeker(3, 0.75)
+		self.conns = CellularImbrium(1.25, 2, 0.2)
+		self.probs1_memory = None		
+		self.x = self.modular_features()
+
+		# Geometric Init
+		for i in range(len(self.layers) - 1):
+		    constant = 0.005
+		    uniform = np.ones_like(self.x)
+		    kl_div = np.sum(self.x * np.log(np.clip(self.x, 1e-8, None)) - np.log(uniform))
+		    kl_div = constant + np.log1p(kl_div)
+		    curvature = constant + np.mean(np.abs(np.diff(np.diff(self.x))))
+		    slope = constant + np.mean(np.abs(np.diff(self.x)))
+		    sigmoid = 1.0 / (1.0 - curvature)
+		    manifold_probs = sigmoid / 1.0 + slope
+		    weight_manifold = self.x / 1.0 - manifold_probs
+		    bias_manifold = self.x / weight_manifold + (1.0 - slope)
+		    w1 = self.weight_manifold.append(weight_manifold)
+		    b1 = self.bias_manifold.append(bias_manifold)
+		    
+		    
+	def modular_features(self):
+	   mutation = self.conns.mutation
+	   multipliers = self.conns.multipliers 
+	   bias = self.conns.bias
+	   net1_eff = self.conns.net1_eff
+	   seeker1 = self.seeker.seeker1_efficiency
+	   seeker2 = self.seeker.seeker2_efficiency
+	   seeker3= self.seeker.seeker3_efficiency
+	   seeker4 = self.seeker.seeker4_efficiency
+	   seeker5 = self.seeker.seeker5_efficiency
+	   bot1 = self.lafold.bot1_efficiency
+	   
+	   bot2=  self.lafold.bot2_efficiency
+	   bot3=  self.lafold.bot3_efficiency			   
+	   completeness_probs = self.seeker.turing_hypothetical_completeness_probabilities
+	   net_equilibrium = self.conns.net_equilibrium
+	   satisfiability = self.conns.satisfiability 	  
+	   alpha = self.alpha
+	   beta = self.beta
+	   entropy = self.entropy_coef
+	   learning = self.superlinear_lr  	
+	   threshold = self.threshold
+	   	
+	   params = np.array([mutation, multipliers, bias, net1_eff, seeker1, seeker2, seeker3, seeker4, seeker5, bot1, bot2, bot3, completeness_probs, net_equilibrium, satisfiability, alpha, beta, entropy, learning, threshold], dtype=np.float32)
+	   return params
+	   
+	def leaky_relu(self, x, alpha=0.01):
+	   return np.where(x > 0, x, alpha * x)
+	   
+	   
+	def leaky_relu_derivative(self, x, alpha=0.01):
+	   return np.where(x > 0, 1, alpha)
+	   
+	def implicit_noise(self, x):
+		constant = 0.005			
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		sigmoid = 1.0 / (1.0 - curvature)
+		superlinear_manifold = sigmoid / 1.0 + curvature	
+			
+		bar = superlinear_manifold / 1.0 + curvature					
+		noises = np.random.uniform(1, bar * superlinear_manifold, size=x.shape)
+		noises /= curvature	
+		return noises		   
+	   	   	   
+	def superlinear_softmax(self, x):
+
+	   threshold = self.threshold 
+	   entropy = self.entropy_coef	   
+	   constant = 0.005	  
+	   uniform = np.ones_like(x)
+	     	   	   	   
+	   leaky_noise = self.implicit_noise(x)
+	   encoder = self.cellular_order_of_geodesic_encoder(x)
+	   injected = x + leaky_noise
+	   
+	   kl_div = np.sum(injected * np.log(np.clip(injected, 1e-8, None)) - np.log(uniform))
+	   kl_div = constant + np.log1p(kl_div)
+	   curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	   slope = constant + np.mean(np.abs(np.diff(injected)))
+	   sigmoid = 1.0 / (1.0 - curvature)
+	   superlinear_manifold = sigmoid / 1.0 + slope
+	   bar = threshold / 1.0 + entropy 
+	   equilibrium_bar = superlinear_manifold / 1.0 + bar
+	   encoder_params = equilibrium_bar / bar + encoder
+	   equilibrium_geodesic = sigmoid / 1.0 + encoder_params
+	   soft_max = equilibrium_geodesic / 1.0 + encoder
+	   ensured = 1.0 + sigmoid / soft_max + sigmoid
+	   	    
+	   geodesic_path = np.dot(injected, ensured)	
+	   geodesic_reconfiguration = np.dot(leaky_noise, ensured)   
+
+	   refined = geodesic_path + geodesic_reconfiguration
+	   refined = np.clip(refined, 1e-8, None)
+
+	   if np.isnan(refined).any() or not np.isfinite(refined).any():
+	   	refined = np.ones_like(refined )
+
+	   self.probs1_memory = refined 
+
+	   return refined
+	   
+
+	   
+	def matrix_lyapunov_evaluator(self, x):
+	   constant = 0.005
+	   
+	   uniform = np.ones_like(x)
+	   kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+	   kl_div = constant + np.log1p(kl_div)
+	   curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	   sigmoid = 1.0 / (1 - curvature)
+	   equilibrium = self.conns.net_equilibrium
+	   net1_eff = self.conns.net1_eff		
+	   multipliers = self.conns.multipliers 
+	   mutation = self.conns.mutation 
+	   bias = self.conns.bias 
+	   net_equilibrium = mutation * net1_eff / 1.0 + (multipliers - equilibrium)
+	   net_multipliers = (1.0 + net_equilibrium) * bias / (1/2 * multipliers) 
+	   equilibrium_reachability = net_equilibrium / 1.0 - bias
+	   guaranteed_reachability = net_multipliers * bias / 1.0 + equilibrium_reachability
+	   technical_satisfiability = guaranteed_reachability * equilibrium / 1.0 + equilibrium_reachability
+	   satisfiability_reachable = 1.0 + technical_satisfiability * net1_eff / (1.0 + equilibrium_reachability) 
+	   safe_logits_slope = np.mean(np.abs(np.diff(x)))
+	   
+	   geometric_slope = sigmoid / (1.0 - safe_logits_slope)
+	   equilibrium_state = geometric_slope / 1.0 + satisfiability_reachable
+	   equilibrium_state = np.clip(equilibrium_state, -1, None)
+	   return equilibrium_state		
+    	   	    		   
+	   	   	   
+	def geodesic_reward(self, x, func):
+	   reward = func
+	   entropy = self.entropy_coef   
+	   constant = 0.005
+	   uniform = np.ones_like(x)
+	   
+	   curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	   slope = constant + np.mean(np.abs(np.diff(x)))
+	   sigmoid = 1.0 / (1.0 - curvature)
+	   superlinear_manifold = sigmoid / 1.0 + slope
+	   geodesic_reward = reward / 1.0 + superlinear_manifold
+	   
+	   penalty_reward = np.std(x) / 1.0 - geodesic_reward
+	   dynamic_reward = np.mean(x) / 1.0 + geodesic_reward
+	   stability = self.matrix_lyapunov_evaluator(x)
+	   if stability >= dynamic_reward:
+	   	reward = stability / 1.0 + dynamic_reward
+
+	   else:
+	   	reward = stability / 1.0 - penalty_reward
+	   	
+	   reward = np.tanh(reward)	
+	   reward = np.clip(reward, -2, 2)	
+	   if np.isnan(reward) or not np.isfinite(reward):
+	   	reward = 1
+	   	
+	   return reward	   	   
+	   
+	   
+	def geometric_robustness(self,x):
+	   alpha = self.alpha
+	   beta = self.beta
+	   threshold = self.threshold	   
+	   constant = 0.005
+	   uniform = np.ones_like(x)
+	   stability = self.matrix_lyapunov_evaluator(x)
+	   
+	   curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	   slope = constant + np.mean(np.abs(np.diff(x)))
+	   sigmoid = 1.0 / (1.0 - curvature)
+	   superlinear_manifold = sigmoid / 1.0 + slope
+	   
+	   bar = alpha / 1.0 - beta
+	   geodesic_equilibrium = sigmoid / 1.0 + superlinear_manifold
+	   superlinear_integrity = bar / 1.0 + geodesic_equilibrium 
+	   superlinear_descent = geodesic_equilibrium / 1.0 - superlinear_integrity
+	   equilibrium_point = superlinear_integrity + (stability - slope) / geodesic_equilibrium + (1.0 - superlinear_descent) 
+	   equilibrium_robustness = stability * equilibrium_point / 1.0 - superlinear_descent
+	   equilibrium_robustness = np.clip(equilibrium_robustness, 1e-8, None)
+	   
+	   return equilibrium_robustness	    	
+	   
+	def geodesic_logits_recognition(self, x):
+	   alpha = self.alpha
+	   beta = self.beta
+	   threshold = self.threshold	   
+	   constant = 0.005
+	   uniform = np.ones_like(x)
+	   stability = self.matrix_lyapunov_evaluator(x)
+
+	   softmax = self.superlinear_softmax(x)
+	   reward = self.geodesic_reward(softmax, agents_prediction())
+	   probs1 = self.probs1_memory
+	   
+	   curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	   probs1_curve =  constant + np.mean(np.abs(np.diff(np.diff(probs1))))
+	   slope = constant + np.mean(np.abs(np.diff(x)))
+	   probs_efficient_curve = probs1_curve / 1.0 - curvature
+	   efficient_curvature = curvature / 1.0 + probs_efficient_curve
+	   	   	   
+	   sigmoid = 1.0 / (1.0 - efficient_curvature)
+	   superlinear_manifold = sigmoid / 1.0 + stability
+	   superlinear_descent = superlinear_manifold / 1.0 - slope
+	   superlinear_efficient = sigmoid / 1.0 - superlinear_descent
+	   superlinear_equilibrium = sigmoid / 1.0 + superlinear_efficient
+	   bias_recognition = superlinear_efficient * reward / 1.0 + superlinear_equilibrium
+	   stability_seeking = bias_recognition / 1.0 + stability
+	   geodesic_recognition = bias_recognition / 1.0 + stability_seeking
+	   projection = sigmoid / 1.0 + geodesic_recognition
+	   
+	   geodesic_pattern = np.dot(softmax, projection)
+	   
+	   geodesic_curve = np.mean(np.abs(np.diff(np.diff(geodesic_pattern))))
+	   recognition_score = geodesic_curve / 1.0 + probs_efficient_curve
+	   recognition_score = np.clip(recognition_score, 1e-8, None)
+	   
+	   self.accumulative_probs += recognition_score
+	   
+	   return geodesic_pattern, recognition_score
+	   
+	def caution_logits_scanner(self, x):
+
+	   alpha = self.alpha
+	   beta = self.beta
+	   threshold = self.threshold	   
+	   constant = 0.005
+	   uniform = np.ones_like(x)
+	   stability = self.matrix_lyapunov_evaluator(x)	   
+	   softmax = self.superlinear_softmax(x)
+
+	   curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	   slope = constant + np.mean(np.abs(np.diff(x)))
+	   sigmoid = 1.0 / (1.0 - curvature)
+	   
+	   superlinear_manifold = sigmoid / 1.0 + slope
+	   possible_caution= sigmoid / 1.0 - stability
+	   geodesic_stability = stability / 1.0 + superlinear_manifold
+	   efficient_manifold = geodesic_stability / 1.0 - possible_caution
+	   superlinear_bias = geodesic_stability + (1.0 - efficient_manifold) / superlinear_manifold + (1.0 - possible_caution)
+	   superlinear_efficient = geodesic_stability / 1.0 + superlinear_bias
+	   
+	   refined = np.dot(softmax, superlinear_efficient)
+
+	   if np.isnan(refined).any() or not np.isfinite(refined).any():
+	   	refined = np.ones_like(refined)
+
+	   	
+	   return refined
+
+	   	   
+	def superlinear_distribution_algorithm(self, x):
+		x = x[0].copy()
+		constant = 0.005
+		uniform = np.ones_like(x)
+		
+		softmax = self.superlinear_softmax(x)			
+		recognition, score = self.geodesic_logits_recognition(softmax)	
+		credibility = self.credibility_confidence(recognition)	
+				
+		kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+		kl_div = constant + np.log1p(kl_div)
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		slope = constant + np.mean(np.abs(np.diff(x)))
+		sigmoid = 1.0 / (1.0 - curvature)
+		
+		superlinear_manifold = sigmoid / 1.0 + slope
+		superlinear_conv = sigmoid / 1.0 + kl_div
+		superlinear_descent = superlinear_conv / 1.0 - slope
+		superlinear_equilibrium = superlinear_manifold / 1.0 - superlinear_descent
+		superlinear_geodesic = sigmoid / 1.0 + score		
+		
+		superlinear_certainty = credibility / 1.0 + superlinear_geodesic
+		superlinear_satisfiability = sigmoid / 1.0 + superlinear_certainty
+		superlinear_div = superlinear_geodesic + superlinear_equilibrium / 1.0 + (1.0 -  superlinear_manifold)
+		superlinear_distribution = superlinear_div / 1.0 - superlinear_conv
+		efficient_distribution = superlinear_equilibrium / 1.0 + superlinear_distribution
+		geodesic_distribution = sigmoid / 1.0 + efficient_distribution
+		
+		distribution = np.dot(softmax, geodesic_distribution)
+
+		if np.isnan(distribution).any() or not np.isfinite(distribution).any():
+			distribution = np.ones_like(distribution)
+			
+		return distribution
+
+	   			   		
+	      
+	def forward_algorithm(self, x):
+	   self.geometric_activations = []  	  	  
+	   self.intrusive_bias = []   	
+	   
+	   master = self.superlinear_softmax(x)
+	   exp = self.epsilon.epsilon_linear_equilibria(master)
+	   blend = master + exp
+	   output = self.conns.lagrange_point_net(blend, master, exp)
+	   output = np.nan_to_num(output, nan=0.0, posinf=1e80,neginf=1e-80)
+	   
+	   raw_curvature = 0.05 + np.mean(np.abs(np.diff(np.diff(output ))))
+	   uniform = np.ones_like(x) / len(x)
+	   kl_divergence = np.sum(output * np.log(np.clip(output, 1e-8, None)) - np.log(uniform))
+	   kl_divergence = 0.005 + np.mean(np.abs(np.diff(np.diff(x))))
+	   sigmoid = 1.0 / (1 - raw_curvature)  
+	   tentative_geodesic = sigmoid / 1.0 + raw_curvature
+	   
+	   equilibrium = np.dot(output, tentative_geodesic)
+	   equal_planner = equilibrium / 1.0 + kl_divergence
+	   kl_meta_divergence = np.sum(equal_planner * np.log(np.clip(equal_planner, 1e-8, None)) - np.log(uniform)) 
+	   kl_meta_divergence = sigmoid + np.log1p(kl_meta_divergence)
+	   
+	   first_curve = np.mean(np.abs(np.diff(np.diff(x)))) 
+	   sec_curve = np.mean(np.abs(np.diff(np.diff(equilibrium)))) 
+	   third_curve = np.mean(np.abs(np.diff(np.diff(equal_planner))))    
+	   all_curve = sigmoid + first_curve + sec_curve + third_curve
+	   
+	   efficient_kl_divergence = kl_meta_divergence / kl_divergence 
+	   div_descent = efficient_kl_divergence/ 1.0 + all_curve
+	   efficient_kl_descent = kl_meta_divergence / div_descent  
+	   efficient_kl_concluded = efficient_kl_divergence / 1.0 + efficient_kl_descent
+	   superlinear_manifold = sigmoid / 1.0 + efficient_kl_concluded
+	   output = np.dot(equal_planner, superlinear_manifold)	
+	   if np.isnan(output).any() or not np.isfinite(output).any():
+	   	output = np.ones_like(output) / len(output)  
+	   	 
+	   self.geometric_activations.append(output) 
+	   for i in range(len(self.weight_manifold) - 1):
+	   	 tuned_superlinear= np.dot(self.geometric_activations[-1] + self.weight_manifold[i], superlinear_manifold)
+	   	 conv_superlinear = np.dot(self.geometric_activations[-1] + self.bias_manifold[i], superlinear_manifold)
+	   	 all_zs = tuned_superlinear + conv_superlinear / sigmoid + (1.0 - superlinear_manifold)
+	   	 geometrical_init = self.matrix_lyapunov_evaluator(all_zs)			
+	   	 tentative_satisfiability = all_zs / 1.0 + geometrical_init
+	   	 tentative_satisfiability = np.nan_to_num(tentative_satisfiability, nan=0.0, posinf=0.0, neginf=0.0)
+	   	 activation = self.leaky_relu(tentative_satisfiability, alpha=geometrical_init)
+	   	 self.intrusive_bias.append(tentative_satisfiability)
+	   	 self.geometric_activations.append(activation)
+	   tuned_superlinear = np.dot(self.geometric_activations[-1] + self.weight_manifold[-1], superlinear_manifold)
+	   conv_superlinear  = np.dot(self.geometric_activations[-1] + self.bias_manifold[-1], superlinear_manifold)
+	   all_zs = tuned_superlinear + conv_superlinear 
+	   geometrical_init = self.matrix_lyapunov_evaluator(all_zs)
+	   tentative_satisfiability = all_zs / 1.0 + geometrical_init
+	   
+	   tentative_satisfiability = np.nan_to_num(tentative_satisfiability, nan=0.0, posinf=0.0, neginf=0.0)  		 					  
+	   a = self.attn.epsitron_lite_linear_attention(tentative_satisfiability)
+	   if np.isnan(a).any() or not np.isfinite(a).any():
+	   	  a = np.ones_like(a) / len(a)
+	   	  
+	   self.intrusive_bias.append(tentative_satisfiability)
+	   self.geometric_activations.append(a)
+	   return a
+	   
+	def tune_algorithm(self, x):
+	   self.geometric_activations = []  	  	  
+	   self.intrusive_bias = [] 
+	   output1 = self.seeker.multirole_geometric_efficiency_optimum_seekerbot4(x)	  
+	   output = self.attn.epsitron_lite_linear_attention(output1)
+	   
+	   output = np.nan_to_num(output, nan=0.0, posinf=1e80,neginf=1e-80)
+	   raw_curvature = 0.05 + np.mean(np.abs(np.diff(np.diff(output ))))
+	   uniform = np.ones_like(x) / len(x)
+	   kl_divergence = np.sum(output * np.log(np.clip(output, 1e-8, None)) - np.log(uniform))
+	   kl_divergence = 0.005 + np.mean(np.abs(np.diff(np.diff(x))))
+	   sigmoid = 1.0 / (1 - raw_curvature)  
+	   tentative_geodesic = sigmoid / 1.0 + raw_curvature
+	   
+	   equilibrium = np.dot(output, tentative_geodesic)
+	   equal_planner = equilibrium / 1.0 + kl_divergence
+	   kl_meta_divergence = np.sum(equal_planner * np.log(np.clip(equal_planner, 1e-8, None)) - np.log(uniform)) 
+	   kl_meta_divergence = sigmoid + np.log1p(kl_meta_divergence)
+	   
+	   first_curve = np.mean(np.abs(np.diff(np.diff(x)))) 
+	   sec_curve = np.mean(np.abs(np.diff(np.diff(equilibrium)))) 
+	   third_curve = np.mean(np.abs(np.diff(np.diff(equal_planner))))    
+	   all_curve = sigmoid + first_curve + sec_curve + third_curve
+	   
+	   efficient_kl_divergence = kl_meta_divergence / kl_divergence 
+	   div_descent = efficient_kl_divergence/ 1.0 + all_curve
+	   efficient_kl_descent = kl_meta_divergence / div_descent  
+	   efficient_kl_concluded = efficient_kl_divergence / 1.0 + efficient_kl_descent
+	   superlinear_manifold = sigmoid / 1.0 + efficient_kl_concluded
+	   output = np.dot(equal_planner, superlinear_manifold)	
+	   
+	   if np.isnan(output).any() or not np.isfinite(output).any():
+	   	output = np.ones_like(output) / len(output)  
+	   	 
+	   self.geometric_activations.append(output) 
+	   for i in range(len(self.weight_manifold) - 1):
+	   	 tuned_superlinear= np.dot(self.geometric_activations[-1] + self.weight_manifold[i], superlinear_manifold)
+	   	 conv_superlinear = np.dot(self.geometric_activations[-1] + self.bias_manifold[i], superlinear_manifold)
+	   	 all_zs = tuned_superlinear + conv_superlinear / sigmoid + (1.0 - superlinear_manifold)
+	   	 geometrical_init = self.matrix_lyapunov_evaluator(all_zs)			
+	   	 tentative_satisfiability = all_zs / 1.0 + geometrical_init
+	   	 tentative_satisfiability = np.nan_to_num(tentative_satisfiability, nan=0.0, posinf=0.0, neginf=0.0)
+	   	 activation = self.leaky_relu(tentative_satisfiability, alpha=geometrical_init)
+	   	 self.intrusive_bias.append(tentative_satisfiability)
+	   	 self.geometric_activations.append(activation)
+	   tuned_superlinear = np.dot(self.geometric_activations[-1] + self.weight_manifold[-1], superlinear_manifold)
+	   conv_superlinear  = np.dot(self.geometric_activations[-1] + self.bias_manifold[-1], superlinear_manifold)
+	   all_zs = tuned_superlinear + conv_superlinear 
+	   geometrical_init = self.matrix_lyapunov_evaluator(all_zs)
+	   tentative_satisfiability = all_zs / 1.0 + geometrical_init
+	   
+	   tentative_satisfiability = np.nan_to_num(tentative_satisfiability, nan=0.0, posinf=0.0, neginf=0.0)  	
+			  
+	   a = self.attn.epsitron_lite_linear_attention(tentative_satisfiability)
+
+	   if np.isnan(a).any() or not np.isfinite(a).any():
+	   	  a = np.ones_like(a) / len(a)
+	   	  
+	   self.intrusive_bias.append(tentative_satisfiability)
+	   self.geometric_activations.append(a)
+	   return a	   
+	   
+	def chain_algorithm(self, x):
+	   self.geometric_activations = []  	  	  
+	   self.intrusive_bias = []
+	   output = self.lafold.lafold_core_automating_system(x)	   
+  
+	   output = self.attn.epsitron_master_attention(x)
+	   output = np.nan_to_num(output, nan=0.0, posinf=1e80,neginf=1e-80)
+	   
+	   raw_curvature = 0.05 + np.mean(np.abs(np.diff(np.diff(output ))))
+	   uniform = np.ones_like(x) / len(x)
+	   kl_divergence = np.sum(output * np.log(np.clip(output, 1e-8, None)) - np.log(uniform))
+	   kl_divergence = 0.005 + np.mean(np.abs(np.diff(np.diff(x))))
+	   sigmoid = 1.0 / (1 - raw_curvature)  
+	   tentative_geodesic = sigmoid / 1.0 + raw_curvature
+	   
+	   equilibrium = np.dot(output, tentative_geodesic)
+	   equal_planner = equilibrium / 1.0 + kl_divergence
+	   kl_meta_divergence = np.sum(equal_planner * np.log(np.clip(equal_planner, 1e-8, None)) - np.log(uniform)) 
+	   kl_meta_divergence = sigmoid + np.log1p(kl_meta_divergence)
+	   
+	   first_curve = np.mean(np.abs(np.diff(np.diff(x)))) 
+	   sec_curve = np.mean(np.abs(np.diff(np.diff(equilibrium)))) 
+	   third_curve = np.mean(np.abs(np.diff(np.diff(equal_planner))))    
+	   all_curve = sigmoid + first_curve + sec_curve + third_curve
+	   
+	   efficient_kl_divergence = kl_meta_divergence / kl_divergence 
+	   div_descent = efficient_kl_divergence/ 1.0 + all_curve
+	   efficient_kl_descent = kl_meta_divergence / div_descent  
+	   efficient_kl_concluded = efficient_kl_divergence / 1.0 + efficient_kl_descent
+	   superlinear_manifold = sigmoid / 1.0 + efficient_kl_concluded
+	   
+	   output = np.dot(equal_planner, superlinear_manifold)	
+	   if np.isnan(output).any() or not np.isfinite(output).any():
+	   	output = np.ones_like(output) / len(output)  
+	   	 
+	   self.geometric_activations.append(output) 
+	   for i in range(len(self.weight_manifold) - 1):
+	   	 tuned_superlinear= np.dot(self.geometric_activations[-1] + self.weight_manifold[i], superlinear_manifold)
+	   	 conv_superlinear = np.dot(self.geometric_activations[-1] + self.bias_manifold[i], superlinear_manifold)
+	   	 all_zs = tuned_superlinear + conv_superlinear / sigmoid + (1.0 - superlinear_manifold)
+	   	 geometrical_init = self.matrix_lyapunov_evaluator(all_zs)			
+	   	 tentative_satisfiability = all_zs / 1.0 + geometrical_init
+	   	 tentative_satisfiability = np.nan_to_num(tentative_satisfiability, nan=0.0, posinf=0.0, neginf=0.0)
+	   	 activation = self.leaky_relu(tentative_satisfiability, alpha=geometrical_init)
+	   	 self.intrusive_bias.append(tentative_satisfiability)
+	   	 self.geometric_activations.append(activation)
+	   tuned_superlinear = np.dot(self.geometric_activations[-1] + self.weight_manifold[-1], superlinear_manifold)
+	   conv_superlinear  = np.dot(self.geometric_activations[-1] + self.bias_manifold[-1], superlinear_manifold)
+	   all_zs = tuned_superlinear + conv_superlinear 
+	   geometrical_init = self.matrix_lyapunov_evaluator(all_zs)
+	   tentative_satisfiability = all_zs / 1.0 + geometrical_init
+	   
+	   tentative_satisfiability = np.nan_to_num(tentative_satisfiability, nan=0.0, posinf=0.0, neginf=0.0)  		 					  
+	   a = self.attn.epsitron_lite_linear_attention(tentative_satisfiability)
+	   if np.isnan(a).any() or not np.isfinite(a).any():
+	   	  a = np.ones_like(a) / len(a)
+	   	  
+	   self.intrusive_bias.append(tentative_satisfiability)
+	   self.geometric_activations.append(a)
+	   return a
+
+	  
+	  	  	  
+	def logistic_dynamical_regressive_bots(self, x):
+	     class Logistic:
+	     	  def __init__(self, outer):
+	     	  	self.outer = outer
+	     	  	self.bot1_growth_eff = 0.1
+	     	  	self.bot2_growth_eff = 0.1
+	     	  	self.bot3_growth_eff = 0.1
+	     	  	self.satisfiability = 0.1     	  	
+	     	  	self.x = x
+	     	  	
+	     	  def matrix_lyapunov_logistic(self, x):
+	     	  	constant = 1/137
+	     	  	
+	     	  	uniform = np.ones_like(x)
+	     	  	recognition, score = self.outer.geodesic_logits_recognition(x)
+	     	  	credibility = self.outer.credibility_confidence(x)
+	     	  	stability = self.outer.matrix_lyapunov_evaluator(x)
+	     	  	logistic1 = self.bot1_growth_eff
+	     	  	logistic2 = self.bot2_growth_eff
+	     	  	logistic3 = self.bot3_growth_eff
+	     	  	
+	     	  	logistic_recurve = 1.0 + logistic2 / (1.0 +logistic3 ) - logistic1
+	     	  	
+	     	  	curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	     	  	slope = constant + np.mean(np.abs(np.diff(x)))
+	     	  	sigmoid = 1.0 / (1.0 - curvature)
+	     	  	
+	     	  	logistic_slope = slope / 1.0 + sigmoid
+	     	  	logistic_geodesic = logistic_slope / 1.0 + stability
+	     	  	logistic_growth = logistic_geodesic / 1.0 + credibility
+	     	  	equilibrium = logistic_growth / 1.0 + logistic_geodesic 
+	     	  	ensuring = stability / 1.0 + equilibrium 
+	     	  	stability_ensuring = sigmoid / 1.0 + ensuring 
+	     	  	stability_ensured = logistic_recurve / 1.0 + stability_ensuring
+	     	  	nash_equilibrium = stability_ensured / 1.0 + sigmoid	     	  	
+	     	  	
+	     	  	fundamental_logistic_geodesic= logistic_geodesic / 1.0 + nash_equilibrium
+	     	  	fundamental_logistic_stability = logistic_growth / 1.0 + equilibrium
+	     	  	fundamental_logistic_reroutes = nash_equilibrium / 1.0 + sigmoid
+	     	  	ensured_logistic_growth = fundamental_logistic_geodesic / 1.0 + fundamental_logistic_stability
+	     	  	ensured_logistic_planner = fundamental_logistic_reroutes / 1.0 + nash_equilibrium 
+	     	  	equilibria = ensured_logistic_planner / 1.0 + ensured_logistic_planner
+	     	  	nash_equilibria = 1.0 + sigmoid / equilibria
+
+	     	  	nash_equilibria = np.clip(nash_equilibria, 1e-8, 1e5)
+	     	  	return nash_equilibria 
+	     	  		     	  		     	  	
+	     	  	
+	     	  		     	  		     	  		     	  	   	     	  
+	     	  def logistic_satisfiability(self):
+	     	  	x = self.x.copy()
+	     	  	constant = 1/137
+	     	  	
+	     	  	uniform = np.ones_like(x)
+	     	  	recognition, score = self.outer.geodesic_logits_recognition(x)
+	     	  	credibility = self.outer.credibility_confidence(x)
+	     	  	stability = self.matrix_lyapunov_logistic(x)
+	     	  	logistic1 = self.bot1_growth_eff
+	     	  	
+	     	  	kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+	     	  	kl_div = constant + np.log1p(kl_div)
+	     	  	curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	     	  	slope = constant + np.mean(np.abs(np.diff(x)))
+	     	  	sigmoid = 1.0 / (1.0 - curvature)
+	     	  	
+	     	  	logistic_manifold = slope / 1.0 + sigmoid 
+	     	  	logistic_conv = sigmoid / 1.0 + kl_div
+	     	  	logistic_descent = logistic_conv / 1.0 - slope
+	     	  	logistic_equilibrium = logistic_manifold / 1.0 - logistic_descent
+	     	  	logistic_geodesic = sigmoid / 1.0 + score	   
+	     	  	logistic_efficiency = logistic1 / 1.0 + logistic_manifold
+	     	  	logistic_absolute = credibility / 1.0 + logistic_efficiency
+	     	  	logistic_stability = stability / 1.0 + logistic_absolute
+	     	  	optimum = logistic_stability / 1.0 + sigmoid
+	     	  	
+	     	  	# 3 fundamental superlinear with bounded logistic growth constraint equation inspired from riemannian geometry	       
+	     	  	fundamental_logistic_geodesic= optimum / 1.0 + logistic_stability
+	     	  	fundamental_logistic_stability = logistic_equilibrium / 1.0 + optimum  
+	     	  	fundamental_logistic_sequencing = optimum / 1.0 + sigmoid
+	     	  	satisfied_geodesic = fundamental_logistic_geodesic / 1.0 + fundamental_logistic_sequencing
+	     	  	satisfied_stability = fundamental_logistic_stability / 1.0 + fundamental_logistic_sequencing
+	     	  	local_optima = satisfied_stability / 1.0 + satisfied_geodesic
+	     	  	nash_projection = 1.0 + local_optima / sigmoid
+
+	     	  	local_logistic = np.dot(x, nash_projection)
+	     	  	
+	     	  	self.bot1_growth_eff = nash_projection	  
+	     	  	   	  	
+	     	  	if np.isnan(local_logistic).any() or not np.isnan(local_logistic).any():
+	     	  		local_logistic = np.ones_like(x)
+	     	  		
+	     	  	return local_logistic, nash_projection
+	     	  	
+	     	  def system(self):
+	     	  	x = self.x.copy()
+	     	  	logistic1, score = self.logistic_satisfiability()
+	     	  	extra = self.matrix_lyapunov_logistic(logistic1) 
+	     	  	satisfiability = self.satisfiability
+	     	  	
+	     	  	if extra >= satisfiability:
+	     	  		print("logistic satisfiability 1 Acquired")
+	     	  		self.satisfiability = score / 1.0 + extra
+	     	  		return logistic1
+	     	  	else:
+	     	  		print("Unsatisfied selection")
+	     	  		self.satisfiability -= 0.001	     	  		
+	     	  		return x	     	  
+	     	  		
+	     class LogisticHelper(Logistic):
+	     	  def __init__(self, outer, x):
+	     	  	super().__init__(outer)
+	     	  	self.main = Logistic(self.outer)
+	     	  	self.x = x     	  	
+	     	  		     	  	
+	     	  		     	  		     	  		     	  	
+	     	  def logistic_agent(self):
+	     	  	x = self.main.system()
+	     	  	x2= self.x.copy()	     	  	
+	     	  	constant = 1/137
+	     	  	
+	     	  	uniform = np.ones_like(x)
+	     	  	robustness = self.outer.geometric_robustness(x)
+	     	  	credibility = self.outer.credibility_confidence(x)
+	     	  	stability = self.matrix_lyapunov_logistic(x)
+	     	  	logistic2 = self.main.bot2_growth_eff
+	     	  	
+	     	  	kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+	     	  	kl_div = constant + np.log1p(kl_div)
+	     	  	curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	     	  	slope = constant + np.mean(np.abs(np.diff(x)))
+	     	  	sigmoid = 1.0 / (1.0 - curvature)
+	     	  	
+	     	  	logistic_manifold = slope / 1.0 + sigmoid 
+	     	  	logistic_conv = sigmoid / 1.0 + kl_div
+	     	  	logistic_descent = logistic_conv / 1.0 - slope
+	     	  	logistic_equilibrium = logistic_manifold / 1.0 - logistic_descent
+	     	  	logistic_geodesic = sigmoid / 1.0 + logistic_manifold  
+	     	  	logistic_efficiency = logistic2 / 1.0 + logistic_manifold
+	     	  	logistic_absolute = robustness / 1.0 + logistic_efficiency
+	     	  	logistic_stability = stability / 1.0 + logistic_absolute
+	     	  	optimum = logistic_stability / 1.0 + sigmoid
+	     	  	
+	     	  	# 3 fundamental superlinear with bounded logistic growth constraint equation inspired from riemannian geometry	       
+	     	  	fundamental_logistic_geodesic= optimum / 1.0 + logistic_stability
+	     	  	fundamental_logistic_stability = logistic_equilibrium / 1.0 + optimum  
+	     	  	fundamental_logistic_sequencing = optimum / 1.0 + sigmoid
+	     	  	
+	     	  	satisfied_geodesic = fundamental_logistic_geodesic / 1.0 + fundamental_logistic_sequencing
+	     	  	satisfied_stability = fundamental_logistic_stability / 1.0 + fundamental_logistic_sequencing
+	     	  	local_optima = satisfied_stability / 1.0 + satisfied_geodesic
+	     	  	nash_projection = 1.0 + local_optima / sigmoid
+ 	
+	     	  	local_helper = np.dot(x2, nash_projection)
+	     	  	
+	     	  	self.main.bot2_growth_eff = nash_projection 
+	     	  	
+	     	  	if np.isnan(local_helper).any() or not np.isfinite(local_helper).any():
+	     	  		local_helper = np.ones_like(x)
+	     	  	return local_helper, nash_projection 
+	     	  	
+	     	  def system(self):
+	     	  	x = self.x.copy()
+	     	  	logistic2, score = self.logistic_agent()
+	     	  	extra = self.main.matrix_lyapunov_logistic(logistic2) 
+	     	  	satisfiability = self.main.satisfiability
+	     	  		     	  	
+	     	  	if extra >= satisfiability:
+	     	  		print("logistic satisfiability 1 Acquired")
+	     	  		self.main.satisfiability = score / 1.0 + extra
+	     	  		
+	     	  		return logistic2
+	     	  	else:
+	     	  		print("Degraceful Unsatisfied selection")
+	     	  		self.main.satisfiability -= 0.001	     	  		
+	     	  		return x	  
+	     	  		
+	     	  		
+	     class LogisticValue(Logistic):
+	     	 def __init__(self, outer, x):
+	     	 	  super().__init__(outer)
+	     	 	  self.main = Logistic(self.outer)
+	     	 	  self.agent = LogisticHelper(self.outer, x)
+	     	 	  self.x = x
+  
+	     	 def logistic_calculation(self):
+	     	  	x = self.agent.system()
+	     	  	x2 = self.x.copy()
+	     	  	constant = 1/137
+	     	  	
+	     	  	uniform = np.ones_like(x)
+	     	  	consistency, score = self.outer.superlinear_consistency(x)
+	     	  	credibility = self.outer.credibility_confidence(x)
+	     	  	stability = self.matrix_lyapunov_logistic(x)
+	     	  	logistic3 = self.main.bot3_growth_eff
+	     	  	helper = self.agent.system()
+	     	  	
+	     	  	kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+	     	  	kl_div = constant + np.log1p(kl_div)
+	     	  	curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	     	  	slope = constant + np.mean(np.abs(np.diff(x)))
+	     	  	sigmoid = 1.0 / (1.0 - curvature)
+	     	  	
+	     	  	logistic_manifold = slope / 1.0 + sigmoid
+	     	  	logistic_conv = sigmoid / 1.0 + kl_div
+	     	  	logistic_descent = logistic_conv / 1.0 - slope
+	     	  	logistic_equilibrium = logistic_manifold / 1.0 - logistic_descent
+	     	  	logistic_geodesic = sigmoid / 1.0 + score	   
+	     	  	
+	     	  	logistic_efficiency = logistic3 / 1.0 + logistic_manifold
+	     	  	logistic_satisfiable = credibility / 1.0 + logistic_efficiency
+	     	  	logistic_definite_value = score / 1.0 + logistic_equilibrium
+	     	  	logistic_stability = stability / 1.0 + logistic_definite_value
+	     	  	logistic_equilibrium = logistic_efficiency / 1.0 - logistic_stability
+	     	  	logistic_planner = logistic_definite_value / 1.0 + logistic_equilibrium
+	     	  	optimum = logistic_planner / 1.0 + sigmoid
+	     	  	
+	     	  	# 3 fundamental superlinear with bounded logistic growth constraint equation inspired from riemannian geometry	       
+	     	  	fundamental_logistic_geodesic= optimum / 1.0 + logistic_stability
+	     	  	fundamental_logistic_stability = logistic_equilibrium / 1.0 + optimum  
+	     	  	fundamental_logistic_sequencing = optimum / 1.0 + sigmoid	
+	     	  	
+	     	  	logistic_geodesic_optima = fundamental_logistic_sequencing / 1.0 + fundamental_logistic_geodesic
+	     	  	logistic_evaluation = logistic_geodesic_optima / 1.0 + fundamental_logistic_stability
+	     	  	logistic_equilibrium = logistic_geodesic_optima / 1.0 + (fundamental_logistic_sequencing - logistic_geodesic_optima)
+	     	  	logistic_dynamical_reward  = logistic_equilibrium / 1.0 + logistic_evaluation
+
+	     	  	nash_projection = 1.0 +  logistic_dynamical_reward / sigmoid
+	     	  	
+	     	  	equilibrium = np.dot(x2, nash_projection)
+	     	  	
+	     	  	if np.isnan(equilibrium).any() or not np.isfinite(equilibrium).any():
+	     	  	      equilibrium = x
+	     	  	      
+	     	  	return equilibrium, nash_projection
+	     	  	
+	     	  	
+	     	 def system(self):
+	     	  	x = self.x.copy()     	 	
+	     	  	logistic3, score = self.logistic_calculation()
+	     	  	extra = self.main.matrix_lyapunov_logistic(logistic3) 
+	     	  	satisfiability = self.main.satisfiability
+	     	  	
+	     	  	if extra >= satisfiability:
+	     	  		print("logistic satisfiability 1 Acquired")
+	     	  		self.main.satisfiability = score / 1.0 + extra
+	     	  		return logistic3, extra
+	     	  	else:
+	     	  		print("Degraceful Unsatisfied selection")
+	     	  		self.main.satisfiability -= 0.001	     	  		
+	     	  		return x, extra
+	     	  			  	     	  
+	     logistic_agent = LogisticValue(self, x)
+	     logistic_distribution = logistic_agent.system()
+	     
+	     return logistic_distribution
+	     
+	def geodesic_logistic_agent(self, x, sat1):
+	     class Logistician:
+	     	 def __init__(self, outer):
+	     	  	 self.outer = outer
+	     	  	 self.x = x
+	     	  	 self.logistic_stability1 = 0.1
+	     	  	 self.logistic_stability2 = 0.1
+	     	  	 self.eva_satisfiable = sat1   	  	 
+	     	  	 self.logistic_satisfiable = 0.1
+	     	  	 
+	     	 def matrix_lyapunov_logistic(self, x):
+	     	  	constant = 1/137
+	     	  	
+	     	  	uniform = np.ones_like(x)
+	     	  	recognition, score = self.outer.geodesic_logits_recognition(x)
+	     	  	credibility = self.outer.credibility_confidence(x)
+	     	  	stability = self.outer.matrix_lyapunov_evaluator(x)
+	     	  	logistic1 = self.logistic_stability1
+	     	  	logistic2 = self.logistic_stability2
+	     	  	sat = self.eva_satisfiable 
+	     	  	
+	     	  	logistic_reshape = 1.0 + logistic1 / logistic2
+	     	  	logistic_recurve = 1.0 + logistic_reshape / sat
+	     	  	
+	     	  	curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	     	  	slope = constant + np.mean(np.abs(np.diff(x)))
+	     	  	sigmoid = 1.0 / (1.0 - curvature)
+	     	  	
+	     	  	logistic_slope = slope / 1.0 + sigmoid
+	     	  	logistic_geodesic = logistic_slope / 1.0 + stability
+	     	  	logistic_growth = logistic_geodesic / 1.0 + credibility
+	     	  	equilibrium = logistic_growth / 1.0 + logistic_geodesic 
+	     	  	ensuring = stability / 1.0 + equilibrium 
+	     	  	stability_ensuring = sigmoid / 1.0 + ensuring 
+	     	  	stability_ensured = logistic_recurve / 1.0 + stability_ensuring
+	     	  	nash_equilibrium = stability_ensured / 1.0 + sigmoid	     	  	
+	     	  	
+	     	  	fundamental_logistic_geodesic= logistic_geodesic / 1.0 + nash_equilibrium
+	     	  	fundamental_logistic_stability = logistic_growth / 1.0 + equilibrium
+	     	  	fundamental_logistic_reroutes = nash_equilibrium / 1.0 + sigmoid
+	     	  	ensured_logistic_growth = fundamental_logistic_geodesic / 1.0 + fundamental_logistic_stability
+	     	  	ensured_logistic_planner = fundamental_logistic_reroutes / 1.0 + nash_equilibrium 
+	     	  	equilibria = ensured_logistic_planner / 1.0 + ensured_logistic_planner
+	     	  	nash_equilibria = 1.0 + sigmoid / equilibria
+
+	     	  	nash_equilibria = np.clip(nash_equilibria, 1e-8, 1e5)
+	     	  	return nash_equilibria
+	     	  	
+	     	 def logistic_agent1(self):
+	     	  	x = self.x.copy()
+	     	  	constant = 1/137
+	     	  	
+	     	  	uniform = np.ones_like(x)
+	     	  	recognition, score = self.outer.geodesic_logits_recognition(x)
+	     	  	credibility = self.outer.credibility_confidence(x)
+	     	  	stability = self.matrix_lyapunov_logistic(x)
+	     	  	logistic1 = self.logistic_stability1
+	     	  	
+	     	  	kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+	     	  	kl_div = constant + np.log1p(kl_div)	     	  	
+	     	  	curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	     	  	slope = constant + np.mean(np.abs(np.diff(x)))
+	     	  	sigmoid = 1.0 / (1.0 - curvature)
+	     	  		     	  
+	     	  	logistic_derivation = curvature / 1.0 + sigmoid
+	     	  	logistic_evaluate = 1.0 + slope / logistic_derivation
+	     	  	logistic_satisfiable = sigmoid / 1.0 + logistic_derivation
+	     	  	logistic_certainty = score / 1.0 + logistic_evaluate
+	     	  	logistic_loss = logistic_certainty / 1.0 - logistic_satisfiable
+	     	  	logistic_tentative_manifold  =  logistic_satisfiable / 1.0 + logistic_loss
+	     	  	equilibrium1 = 1.0 + logistic_tentative_manifold /  sigmoid
+	     	  	equilibrium2 = 1.0 + equilibrium1 / sigmoid 
+	     	  	equilibrium_slope = 1.0 + equilibrium2 / equilibrium1
+	     	  	derivative_equilibrium = 1.0 + equilibrium_slope / kl_div
+	     	  	derivation = derivative_equilibrium / 1.0 + sigmoid
+
+	     	  	
+	     	  	self.logistic_stability1 = derivation
+	     	  	print(derivation)
+	     	  	optima = np.dot(x, derivation)
+	     	  	if np.isnan(optima).any() or not np.isfinite(optima).any():
+	     	  		optima = x
+	     	  		
+	     	  	return optima, score
+	     	  
+	     	 def logistic_growth(self):
+	     	  	logistic1, score = self.logistic_agent1()
+	     	  	stability = self.matrix_lyapunov_logistic(logistic1)
+	     	  	if stability >= self.logistic_satisfiable:
+	     	  		value = score / 1.0 + stability 
+	     	  		self.logistic_satisfiable = value
+	     	  		return logistic1
+	     	  	else:
+	     	  		x = self.x.copy()
+	     	  		return x
+	     	  		
+	     	  	
+	     	  	
+	     class LogisticAgent(Logistician):
+	     	  def __init__(self, outer, x):
+	     	  	super().__init__(outer)
+	     	  	self.outer = outer
+	     	  	self.master = Logistician(self.outer)
+	     	  	self.x = self.master.logistic_growth()
+	     	  		     	  	
+	     	  def logistic_agent2(self):
+	     	  	x = self.x.copy()
+	     	  	constant = 1/137
+	     	  	
+	     	  	uniform = np.ones_like(x)
+	     	  	recognition, score = self.outer.geodesic_logits_recognition(x)
+	     	  	credibility = self.outer.credibility_confidence(x)
+	     	  	stability = self.matrix_lyapunov_logistic(x)
+	     	  	logistic2 = self.logistic_stability2
+	     	  	
+	     	  	kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+	     	  	kl_div = constant + np.log1p(kl_div)	     	  	
+	     	  	curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	     	  	slope = constant + np.mean(np.abs(np.diff(x)))
+	     	  	sigmoid = 1.0 / (1.0 - curvature)
+	     	  		     	  
+	     	  	logistic_derivation = curvature / 1.0 + sigmoid
+	     	  	logistic_evaluate = 1.0 + slope / logistic_derivation
+	     	  	logistic_satisfiable = sigmoid / 1.0 + logistic_derivation
+	     	  	logistic_certainty = score / 1.0 + logistic_evaluate
+	     	  	logistic_loss = logistic_certainty / 1.0 - logistic_satisfiable
+	     	  	logistic_tentative_manifold  = 1.0 + logistic_satisfiable / logistic_loss
+	     	  	logistic_reachability = sigmoid / 1.0 + logistic_tentative_manifold
+	     	  	logistic_manifold_slope = 1.0 + logistic_reachability / 1.0 - logistic_loss 
+	     	  	optimal_logistic = logistic_manifold_slope / 1.0 + logistic_reachability
+	     	  	equilibrium_point = 1.0 + optimal_logistic / logistic_manifold_slope
+	     	  	projection = 1.0 + equilibrium_point / (1.0 - kl_div)
+	     	  	projection_ability = 1.0 + logistic2 / projection 
+	     	  	equilibria = projection / 1.0 + sigmoid 
+	     	  	
+	     	  	refined = np.dot(x, equilibria)
+	     	  	self.logistic_stability2 = equilibria 
+	     	  	if np.isnan(refined).any() or not np.isfinite(refined).any():
+	     	  		 refined = x
+	     	  		 
+	     	  	return refined, projection
+	     	  	
+	     	  	
+	     	  def logistic_growth(self):
+	     	  	logistic2, score = self.logistic_agent2()
+	     	  	stability = self.master.matrix_lyapunov_logistic(logistic2)
+	     	  	if stability >= self.master.logistic_satisfiable:
+	     	  		value = score / 1.0 + stability 
+	     	  		self.master.logistic_satisfiable = value
+	     	  		return logistic2
+	     	  	else:
+	     	  		x = self.x.copy()
+	     	  		return x
+	     	  		
+	     agentic_logistic = LogisticAgent(self, x) 
+	     growth = agentic_logistic.logistic_growth() 	
+	     return growth
+	     
+	     	     	  	     	  
+	def logistic_dynamic_modelling(self, x):
+		x = x.copy()
+		class LogisticModel:
+			def __init__(self, outer):
+				self.outer = outer
+				self.model1_eff = 0.1
+				self.model2_eff = 0.1
+				self.model3_eff = 0.1
+				self.x = x.copy()
+				self.satisfiability = 0.1		
+				
+				
+			def matrix_lyapunov_logistic(self, x):
+			    constant = 1/137			    
+			    uniform = np.ones_like(x)
+			    recognition, score = self.outer.geodesic_logits_recognition(x)
+			    credibility = self.outer.credibility_confidence(x)
+			    stability = self.outer.matrix_lyapunov_evaluator(x)
+			    logistic1 = self.model1_eff
+			    logistic2 = self.model2_eff
+			    sat = self.satisfiability
+			    
+			    logistic_reshape = 1.0 + logistic1 / logistic2
+			    logistic_recurve = 1.0 + logistic_reshape / sat
+			    
+			    curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+			    slope = constant + np.mean(np.abs(np.diff(x)))
+			    sigmoid = 1.0 / (1.0 - curvature)
+			    
+			    logistic_slope = slope / 1.0 + sigmoid
+			    logistic_geodesic = logistic_slope / 1.0 + stability
+			    logistic_growth = logistic_geodesic / 1.0 + credibility
+			    equilibrium = logistic_growth / 1.0 + logistic_geodesic 
+			    ensuring = stability / 1.0 + equilibrium 
+			    stability_ensuring = sigmoid / 1.0 + ensuring 
+			    
+			    stability_ensured = logistic_recurve / 1.0 + stability_ensuring
+			    nash_equilibrium = stability_ensured / 1.0 + sigmoid	     	  	
+			    
+			    fundamental_logistic_geodesic= logistic_geodesic / 1.0 + nash_equilibrium
+			    fundamental_logistic_stability = logistic_growth / 1.0 + equilibrium
+			    fundamental_logistic_reroutes = nash_equilibrium / 1.0 + sigmoid
+			    ensured_logistic_growth = fundamental_logistic_geodesic / 1.0 + fundamental_logistic_stability
+			    ensured_logistic_planner = fundamental_logistic_reroutes / 1.0 + nash_equilibrium 
+			    equilibria = ensured_logistic_planner / 1.0 + ensured_logistic_planner
+			    nash_equilibria = 1.0 + sigmoid / equilibria
+			    
+			    nash_equilibria = np.clip(nash_equilibria, 1e-8, 1e5)
+			    return nash_equilibria	
+			    
+			def logistic_stability_modelling_softmax(self):
+				x = self.x.copy()
+				constant = 1/137
+				uniform = np.ones_like(x)
+				
+				kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+				kl_div = constant + np.log1p(kl_div)
+				curvature = np.mean(np.abs(np.diff(np.diff(x))))
+				slope = np.mean(np.abs(np.diff(x)))			
+				sigmoid = 1.0 / (1.0 - curvature)
+				
+				geodesic_equilibrium = (1.0 + sigmoid) / slope
+				projection = geodesic_equilibrium / 1.0 + geodesic_equilibrium
+				exp_superlinear = np.exp(projection) / 1.0 - sigmoid
+				logistic_value = 1.0 + sigmoid / exp_superlinear
+				fundamental_logistic_bias = 1.0 + logistic_value / (1.0 - slope)  
+				fundamental_logistic_div = 1.0 + fundamental_logistic_bias / kl_div
+				fundamental_logistic_efficiency = fundamental_logistic_div / 1.0 + sigmoid
+				fundamental_logistic_modelling = 1.0 + fundamental_logistic_efficiency / exp_superlinear
+				stability_modelling = 1.0 + fundamental_logistic_modelling / logistic_value
+				geodesic_information = np.dot(x, stability_modelling)
+				if np.isnan(geodesic_information).any() or not np.isfinite(geodesic_information).any():
+				   geodesic_information = np.ones_like(x)
+				return geodesic_information
+			    
+																					
+			def logistic_modelling(self):
+			    x2 = self.logistic_stability_modelling_softmax()
+			    constant = 1/137
+			    uniform = np.ones_like(x2)
+			    
+			    kl_div = np.sum(x2 * np.log(np.clip(x2, 1e-8, None)) - np.log(uniform))
+			    kl_div = constant + np.log1p(kl_div)
+			    curvature = constant + np.mean(np.abs(np.diff(np.diff(x2))))
+			    slope = constant + np.mean(np.abs(np.diff(x2)))			    
+			    sigmoid = 1.0 / (1.0 - curvature)
+			    
+			    recognition, score = self.outer.geodesic_logits_recognition(x2)
+			    credibility = self.outer.credibility_confidence(x2)
+			    stability = self.matrix_lyapunov_logistic(x2)
+			    logistic1 = self.model1_eff						
+			    
+			    geodesic_value = sigmoid / 1.0 + slope		
+			    information_geo = 1.0 + credibility / geodesic_value
+			    stable_conf_probs = 1.0 + stability / sigmoid 
+			    score_satisfiability = score / 1.0 + stable_conf_probs
+			    equilibrium_sat = 1.0 + information_geo / 1.0 + (1.0 - score_satisfiability)
+			    projection = 1.0 + equilibrium_sat / sigmoid	    
+	    
+			    fundamental_logistic_bias = 1.0 + geodesic_value / (1.0 - slope)  
+			    fundamental_logistic_div = 1.0 + fundamental_logistic_bias / kl_div
+			    fundamental_logistic_efficiency = fundamental_logistic_div / 1.0 + sigmoid
+			    fundamental_logistic_modelling = 1.0 + fundamental_logistic_efficiency / equilibrium_sat
+			    stability_modelling = 1.0 + fundamental_logistic_modelling / score_satisfiability
+			    
+			    # 3 fundamental logistic equation derived to acquire the thorough geodesic info per calculus variations of dimensionless number to acquire a stable modelling and a high efficiency of geodesic information in any dimensionless geometric space in euclidean range			   
+			    # (1/2) was used to calculate the moduli space of the geometric dimensionless number thay acquire a stable geodesic efficiency of an information or data where trA2 > 0 given positive logits  to ensure geodesic stability of each logistic growth.
+			    # (1/6) was used to calculate the theoretical geodesic space of information efficiency through euclidean range in moduli space where trA3 > 0 to ensure logistic growth stability through superlinear search.
+			    
+			    # simplified moduli space combined with geodesic mapping efficiency to ensure both logistic and superlinear growth to maximize information gather efficiency and stability ensuring both appear in geometric efficiency through moduli space search with trA3 > 0 and range 0 -> finite numbers with any given positive logits		    
+			    trA1 = projection / (1.0 - slope)
+			    trA2 = (1/2) + stability_modelling / 1.0 + trA1**2
+			    trA3 = (1/6) + logistic1 / (trA2**2) - 1.0 		    
+			    geodesic_info = np.dot(x, trA3)
+			    self.model1_eff = 1.0 + trA3 / sigmoid 
+			    
+			    if np.isnan(geodesic_info).any() or not np.isfinite(geodesic_info).any():
+			    	geodesic_info = np.ones_like(x)
+			    return geodesic_info
+			    
+			def modelling(self):
+			    geometric_constant = 1/137
+			    x = self.x.copy()
+			    satisfiability = self.satisfiability
+			    model = logistic_modelling()
+			    check = self.matrix_lyapunov_logistic(model)
+			    if check >= satisfiability:
+			    	value = 1.0 + check / satisfiability
+			    	self.satisfiability = value		
+			    	return model
+			    else:
+			    	value = geometric_constant + (1.0 - satisfiability) / check
+			    	self.main.satisfiability -= 0.1				    	
+			    	return x
+			    	
+				        
+		class Logistic2(LogisticModel):
+			def __init__(self, outer):
+				super().__init__(outer)
+				self.main = LogisticModel(self.outer)
+				self.bias = 0.1
+				self.x = x.copy()																																																				
+			def A2Model(self):
+				x = self.x.copy()
+				constant = 1/137
+				bias = self.bias 
+				logistic2 = self.main.model2_eff 
+											
+				curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+				slope = constant + np.mean(np.abs(np.diff(x)))
+				sigmoid = 1.0 / (1.0 - curvature)
+				geodesic_manifold = 1.0 + sigmoid / slope
+				geodesic_conv = geodesic_manifold / 1.0 + bias
+				
+				logistic_regression = 1.0 + np.exp(geodesic_conv) / sigmoid
+				superlinear_asc = np.exp(geodesic_conv) / 1.0 + sigmoid
+				logistic_equilibrium = 1.0 + superlinear_asc / logistic_regression
+				logistic_optimum = 1.0 + logistic_equilibrium / (bias - 1.0)
+				projection_space = 1.0 + logistic2 / logistic_optimum
+				
+				trA1 = projection_space / (1.0 - slope)
+				trA2 = (1/2) + logistic_equilibrium / 1.0 + trA1**2
+				trA3 = (1/6) + logistic_optimum / (trA2**2) - 1.0
+				
+				geodesic_info = np.dot(x, trA3)
+				self.main.model2_eff = 1.0 + trA3 / sigmoid
+				if np.isnan(geodesic_info).any() or not np.isfinite(geodesic_info).any():
+				   geodesic_info = np.ones_like(x)
+				return geodesic_info	
+			    
+			def modelling(self):
+			    geometric_constant = 1/137
+			    x = self.x.copy()
+			    satisfiability = self.main.satisfiability
+			    model = self.A2Model()
+			    check = self.main.matrix_lyapunov_logistic(model)
+			    if check >= satisfiability:
+			    	value = 1.0 + check / satisfiability
+			    	self.main.satisfiability = value		
+			    	return model
+			    else:
+			    	value = geometric_constant + (1.0 - satisfiability) / check
+			    	self.main.satisfiability -= 0.1	
+			    	return x
+			    	
+			    			    		    			    			    		    		    			    			    
+		class Logistic3(LogisticModel):
+			def __init__(self, outer):
+				super().__init__(outer)
+				self.main = LogisticModel(self.outer)
+				self.main2 = Logistic2(self.outer)
+				self.bias = 0.1
+				self.x = x.copy()						    					
+									
+			def A3Model(self):
+				model1 = self.main.logistic_modelling()
+				model2 = self.main2.modelling()
+				constant = 1/137
+				bias = self.bias 				
+				logistic1 = self.main.model1_eff
+				logistic2 = self.main.model2_eff				
+				logistic3 = self.main.model3_eff 	
+							
+				curvature1 = constant + np.mean(np.abs(np.diff(np.diff(model1))))
+				curvature2 = constant + np.mean(np.abs(np.diff(np.diff(model2))))
+				slope1 = constant + np.mean(np.abs(np.diff(model1)))
+				slope2 = constant + np.mean(np.abs(np.diff(model2)))
+				curvature_ratio = curvature2 / 1.0 + curvature1
+				slope_ratio = 1.0 + slope2 / slope1
+				model_ratio = logistic3 / 1.0 + (logistic2 - logistic1)
+				sigmoid = 1.0 / (1.0 - curvature_ratio) 				
+				geodesic_manifold = 1.0 + sigmoid / slope_ratio
+				geodesic_conv = geodesic_manifold / 1.0 + bias
+
+				equilibrium_conv = 1.0 + model_ratio / geodesic_conv				
+				logistic_growth = 1.0 + equilibrium_conv / sigmoid
+				superlinear_growth = equilibrium_conv / 1.0 + sigmoid
+				entropy = superlinear_growth / (1.0 - logistic_growth)
+				conv_eff_growth = logistic_growth / (1.0 + entropy) 
+				efficient_dynamic = 1.0 + superlinear_growth / conv_eff_growth
+				projection_space = 1.0 + efficient_dynamic / (1.0 +slope_ratio) - entropy
+				
+				trA1 = projection_space / (1.0 - slope_ratio)
+				trA2 = (1/2) + efficient_dynamic / 1.0 + trA1**2
+				trA3 = (1/6) + logistic_growth / (trA2**2) - 1.0
+				
+				geodesic_info = np.dot(x, trA3)
+				self.main.model3_eff = 1.0 + trA3 / sigmoid
+					
+				if np.isnan(geodesic_info).any() or not np.isfinite(geodesic_info).any():
+				   geodesic_info = np.ones_like(x)
+				return geodesic_info	
+			    			   	
+							
+			def modelling(self):
+			    geometric_constant = 1/137
+			    x = self.x.copy()
+			    satisfiability = self.main.satisfiability
+			    model = self.A3Model()
+			    check = self.main.matrix_lyapunov_logistic(model)
+			    if check >= satisfiability:
+			    	value = 1.0 + check / satisfiability
+			    	self.main.satisfiability = value		
+			    	return model
+			    else:
+			    	value = geometric_constant + (1.0 - satisfiability) / check
+			    	self.main.satisfiability -= 0.1		    	
+			    	return x																		
+		agentic_logistic = Logistic3(self) 					    	
+		growth = agentic_logistic.modelling() 	
+		return growth	
+		
+		
+	def dynamic_attractor(self, x, threshold1, threshold2):
+		x = x.copy()
+		threshold1 = threshold1.copy()
+		threshold2 = threshold2.copy()
+		class Node:
+			def __init__(self, outer):
+				self.outer = outer
+				self.global_satisfiability = 0.1
+			
+			def run(self):
+				evaluator = self.matrix_lyapunov_evaluator(x)
+				satisfiability = self.global_satisfiability
+				if evaluator >= satisfiability:
+					self.satisfiability = evaluator 
+					return True
+				else:
+					self.satisfiability -= 0.01
+					return False			
+																			
+		class DynamicAttractor(Node):
+			 def __init__(self, outer):
+			       super().__init__(outer)
+			       self.dynamic_basin = 0.0
+			       self.weight = self.outer.weight_manifold
+			       self.bias = self.outer.bias_manifold
+			       self.threshold = threshold
+			       
+			 def matrix_lyapunov_logistic(self, x):
+			    constant = 1/137			    
+			    uniform = np.ones_like(x)
+			    recognition, score = self.outer.geodesic_logits_recognition(x)
+			    credibility = self.outer.credibility_confidence(x)
+			    stability = self.outer.matrix_lyapunov_evaluator(x)
+			    logistic1 = threshold1
+			    logistic2 = threshold2
+			    sat = self.satisfiability
+			    
+			    logistic_reshape = 1.0 + logistic1 / logistic2
+			    logistic_recurve = 1.0 + logistic_reshape / sat
+			    
+			    curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+			    slope = constant + np.mean(np.abs(np.diff(x)))
+			    sigmoid = 1.0 / (1.0 - curvature)
+			    
+			    logistic_slope = slope / 1.0 + sigmoid
+			    logistic_geodesic = logistic_slope / 1.0 + stability
+			    logistic_growth = logistic_geodesic / 1.0 + credibility
+			    equilibrium = logistic_growth / 1.0 + logistic_geodesic 
+			    ensuring = stability / 1.0 + equilibrium 
+			    stability_ensuring = sigmoid / 1.0 + ensuring 
+			    
+			    stability_ensured = logistic_recurve / 1.0 + stability_ensuring
+			    nash_equilibrium = stability_ensured / 1.0 + sigmoid	     	  	
+			    
+			    fundamental_logistic_geodesic= logistic_geodesic / 1.0 + nash_equilibrium
+			    fundamental_logistic_stability = logistic_growth / 1.0 + equilibrium
+			    fundamental_logistic_reroutes = nash_equilibrium / 1.0 + sigmoid
+			    ensured_logistic_growth = fundamental_logistic_geodesic / 1.0 + fundamental_logistic_stability
+			    ensured_logistic_planner = fundamental_logistic_reroutes / 1.0 + nash_equilibrium 
+			    equilibria = ensured_logistic_planner / 1.0 + ensured_logistic_planner
+			    nash_equilibria = 1.0 + sigmoid / equilibria
+			    
+			    nash_equilibria = np.clip(nash_equilibria, 1e-8, 1e5)
+			    return nash_equilibria	
+			    			  			  			       
+			  			  			       			  			  			       			  			  			       
+			 def dynamic_attractor_modelling(self):
+			     constant = 1/137
+			     weight = self.weight
+			     bias = self.bias
+			     dynamic_basin = self.dynamic_basin
+			     
+			     curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+			     slope = constant + np.mean(np.abs(np.diff(x)))
+			     sigmoid = 1.0 / (1.0 - curvature)
+			     slope = 1.0 + sigmoid / curvature
+			     
+			     w_proj = np.tanh(weight @ x)
+			     b_proj = np.tanh(bias @ x)
+			     			     
+			     geodesic_manifold = sigmoid / 1.0 + slope
+			     logistic_growth = 1.0 + sigmoid / geodesic_manifold
+			     superlinear_growth = sigmoid / 1.0 + geodesic_manifold
+			     
+			     weight_attractor_field = 1.0 + w_proj /  (logistic_growth - 1.0)
+			     bias_attractor_field = b_proj * curvature /  (superlinear_growth - 1.0)
+			    			     
+			     dynamic_attractor = 1.0 + weight_attractor_field / (1.0 + bias_attractor_field) - (1.0 + dynamic_basin)
+			     
+			     if np.isnan(dynamic_attractor) or not np.isfinite(dynamic_attractor):
+			     	dynamic_attractor = 1.0
+			     return dynamic_attractor
+			     
+			     
+			 def run_process(self):
+			    dynamic_attractor = self.dynamic_attractor_modelling() 	
+			    logistics = self.matrix_lyapunov_logistics(x)
+			    if dynamic_attractor >= logistics:
+			    	self.dynamic_basin = dynamic_attractor 
+			    	return dynamic_attractor
+			    else:
+			    	self.dynamic_basin = logistics
+			    	return logistics
+			    	
+		class MetaRedefineLearning(Node):
+			def __init__(self, outer):
+				super().__init__(outer)
+				self.satisfiability = 0.1
+				self.rectified = RectifiedModellingUnit(self.outer)
+				self.dynamic = DynamicAttractor(self.outer)
+				
+			def meta_transformation(self, x):
+				x = x.copy()
+				constant = 1/137
+				uniform = np.ones_like(x)
+				
+				rectified = self.rectified.processing_unit()
+				dynamic = self.dynamic.run_process()
+				
+				kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+				kl_div = constant + np.log1p(kl_div)
+				curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+				slope = constant + np.mean(np.abs(np.diff(x)))
+				sigmoid = 1.0 / (1.0 - curvature)
+				dynamic_sigmoid = 1.0 + dynamic / sigmoid
+				rectified_superlinear_slope = rectified / 1.0 + slope												
+				geodesic_manifold = sigmoid / (1.0 + slope)
+				geodesic_div = 1.0 + geodesic_manifold / kl_div
+				
+				dynamic_logistic_equilibrium = 1.0 + dynamic_sigmoid / rectified_superlinear_slope - 1.0
+				dynamic_superlinear_equilibrium = rectified_superlinear_slope / 1.0 + dynamic_sigmoid
+				attractor = 1.0 + dynamic_logistic_equilibrium / (1.0 - rectified_superlinear_slope)
+				
+				dynamic_logistic_equilibrium = np.clip(dynamic_logistic_equilibrium, 1e-8, None)
+				dynamic_superlinear_equilibrium = np.clip(dynamic_superlinear_equilibrium, 1e-8, None)
+				attractor = np.clip(attractor, 1e-8, None)
+				
+				return dynamic_logistic_equilibrium, dynamic_superlinear_equilibrium, attractor						
+				
+			def logistic_softmax(self):
+				x = x.copy()
+				constant = 1/137
+				dynamic_log, dynamic_sup, attractor = self.meta_transformation(x)
+				
+				uniform = np.ones_like(x)
+				kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+				kl_div = constant + np.log1p(kl_div)
+				curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+				slope = constant + np.mean(np.abs(np.diff(x)))
+				
+				sensitivity_sigmoid = 1.0 / (1.0 - curvature)
+				dynamic_sigmoid = 1.0 / (1.0 + dynamic_log)
+				dynamic_manifold = dynamic_sigmoid / 1.0 + slope
+				sensitive_manifold = 1.0 + sensitivity_sigmoid / slope
+				geodesic_div = dynamic_manifold / 1.0 + kl_div
+				geodesic_sensitivity = 1.0 + sensitivity_sigmoid / (1.0 - curvature)
+				
+				trA1 = projection_space / (1.0 - slope_ratio)
+				trA2 = (1/2) + efficient_dynamic / 1.0 + trA1**2
+				trA3 = (1/6) + logistic_growth / (trA2**2) - 1.0	
+				
+				spectral_fixed_equilibrium = np.dot(x, trA3)
+				spectral_dynamic_equilibrium = np.dot(x, geodesic_sensitivity)
+				
+				if np.isnan(spectral_dynamic_equilibrium).any() or not np.isfinite(spectral_dynamic_equilibrium).any():
+					spectral_dynamic_equilibrium = np.ones_like(x)
+				if np.isnan(spectral_fixed_equilibrium).any() or not np.isfinite(spectral_fixed_equilibrium).any():
+					spectral_fixed_equilibrium = np.ones_like(x)
+				return spectral_dynamic_equilibrium, spectral_fixed_equilibrium
+													
+								
+						     			  			     		     			  			     
+		class RectifiedModellingUnit(Node):
+			def __init__(self, outer):
+				super().__init__(outer)
+				self.local_basin = 0.1
+				self.efficiency = 0.1
+				self.weight = self.outer.weight 
+				self.bias = self.outer.bias
+				self.main = DynamicAttractor(self.outer )
+												
+			def geometric_rectified_model(self, x):
+			     constant = 1/137
+			     weight = self.weight
+			     bias = self.bias				
+			     local_basin = self.local_basin
+			     main_attractor = self.main.run_process()
+			     
+			     curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+			     slope = constant + np.mean(np.abs(np.diff(x)))
+			     sigmoid = 1.0 / (1.0 - curvature)
+			     slope = 1.0 + sigmoid / curvature
+			     
+			     w_proj = np.tanh(weight @ x)
+			     b_proj = np.tanh(bias @ x)
+			     basin_proj = np.tanh(main_attractor @ x)
+			     
+			     geodesic_manifold = sigmoid / 1.0 + slope
+			     logistic_growth = 1.0 + sigmoid / geodesic_manifold
+			     superlinear_growth = sigmoid / 1.0 + geodesic_manifold
+			     
+			     weight_attractor_field = 1.0 + w_proj /  (logistic_growth - 1.0)
+			     bias_attractor_field = b_proj * curvature /  (superlinear_growth - 1.0)
+			     basin_attractor_field = basin_proj * (1.0 - sigmoid) / 1.0 + superlinear_growth
+			     
+			     dynamic_model = basin_attractor_field * (1.0 + weight_attractor_field) / (1.0 - bias_attractor_field)
+			     dynamic_modelling = 1.0 + dynamic_model / (1.0 - local_basin)
+			     
+			     rectified = np.where(x > 0, x, dynamic_modelling * x)
+			     if np.isnan(rectified).any() or not np.isfinite(rectified).any():
+			     	rectified = np.ones_like(x)
+			     return rectified, dynamic_modelling
+			     
+			def processing_unit(self):
+				logistic = self.main.matrix_lyapunov_logistic(x)
+				rectified, model = self.geometric_rectified_model(x)
+			    if model >= logistics:
+			    	self.local_basin = model
+			    	return model
+			    else:
+			    	self.local_basin = logistics
+			    	return logistics
+			   
+			 		 				
+
+	   	   	   	   	   	   
+	def superlinear_anthropic_causalities_modelling(self, x):
+		constant = 1/137
+		uniform = np.ones_like(x)
+		
+		softmax = self.superlinear_softmax(x)
+		recognition, score = self.geodesic_logits_recognition(softmax)		
+		robustness = self.geometric_robustness(x)
+		caution = self.caution_logits_scanner(recognition)
+		certainty = self.superlinear_uncertainty_estimator(caution)
+		stability = self.matrix_lyapunov_evaluator(caution)
+		
+		kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+		kl_div = constant + np.log1p(kl_div)
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		slope = constant + np.mean(np.abs(np.diff(x)))
+		sigmoid = 1.0 / (1.0 - curvature)
+		
+		superlinear_manifold = sigmoid / 1.0 + slope
+		superlinear_conv = sigmoid / 1.0 + kl_div
+		superlinear_descent = superlinear_conv / 1.0 - slope
+		superlinear_equilibrium = superlinear_manifold / 1.0 - superlinear_descent
+		superlinear_geodesic = sigmoid / 1.0 + score
+		superlinear_efficient = superlinear_geodesic / 1.0 + superlinear_equilibrium
+		
+		modelling1 = np.dot(softmax, superlinear_efficient)
+		modelling2 = np.dot(recognition, superlinear_efficient)
+		modelling3 = np.dot(certainty, superlinear_efficient)
+		all_modelling = modelling1 + modelling2 + modelling3
+		
+		modelling_div = np.sum(all_modelling * np.log(np.clip(all_modelling, 1e-8, None)) - np.log(uniform))	
+		modelling_div = sigmoid + np.log1p(modelling_div)
+		
+		first_curve = np.mean(np.abs(np.diff(np.diff(modelling1))))
+		sec_curve = np.mean(np.abs(np.diff(np.diff(modelling2))))				
+		third_curve = np.mean(np.abs(np.diff(np.diff(modelling3))))
+		eff_curve = sigmoid * third_curve / 1.0 + (first_curve + sec_curve)
+		
+		efficient_kl = modelling_div / 1.0 + kl_div
+		kl_curve = efficient_kl / 1.0 + eff_curve		
+		div_manifold = modelling_div / 1.0 - kl_curve
+		superlinear_stability = superlinear_efficient / 1.0 + div_manifold
+		geodesic_path = superlinear_efficient / 1.0 + superlinear_stability
+		geodesic_projection = superlinear_geodesic / 1.0 + geodesic_path
+		
+		refined = np.dot(softmax, geodesic_projection)
+		if np.isnan(refined).any() or not np.isfinite(refined).any():
+			refined = np.ones_like(refined)
+			
+		return refined
+		
+		
+		
+	def superlinear_trajectory_encoder(self, x):
+		x = x[0].copy()
+		constant = 1/137
+		uniform = np.ones_like(x)
+		softmax = self.superlinear_softmax(x)
+		recognition, score = self.geodesic_logits_recognition(softmax)		
+		robustness = self.geometric_robustness(recognition)
+		caution = self.caution_logits_scanner(softmax)
+		certainty = self.superlinear_uncertainty_estimator(caution)
+
+		credibility = self.credibility_confidence(certainty)		
+		reward = self.geodesic_reward(recognition, agents_prediction())
+		stability = self.matrix_lyapunov_evaluator(caution)
+		
+		kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+		kl_div = constant + np.log1p(kl_div)
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		slope = constant + np.mean(np.abs(np.diff(x)))
+		sigmoid = 1.0 / (1.0 - curvature)
+		
+		superlinear_manifold = sigmoid / 1.0 + slope
+		superlinear_conv = sigmoid / 1.0 + kl_div
+		superlinear_descent = superlinear_conv / 1.0 - slope
+		superlinear_equilibrium = superlinear_manifold * reward / 1.0 - superlinear_descent
+		superlinear_geodesic = sigmoid / 1.0 + score	
+		
+		superlinear_trajectory_manifold = superlinear_geodesic / 1.0 + superlinear_conv
+		superlinear_trajectory_geodesic = superlinear_conv / 1.0 + superlinear_trajectory_manifold
+		superlinear_efficient_geodesic = superlinear_trajectory_manifold * reward / superlinear_equilibrium + (1.0 -superlinear_trajectory_geodesic)
+		superlinear_credibility = credibility / 1.0 + superlinear_trajectory_geodesic
+		superlinear_robustness = robustness / 1.0 + superlinear_trajectory_geodesic
+		superlinear_stability = stability / 1.0 + superlinear_credibility
+		equilibria = superlinear_robustness / 1.0 + superlinear_stability
+		geodesic_projection = equilibria / 1.0 + superlinear_efficient_geodesic
+		conclusion = sigmoid * reward / 1.0 +geodesic_projection
+				
+		geodesic = np.dot(certainty, conclusion)
+		if np.isnan(geodesic).any() or not np.isfinite(geodesic).any():
+			geodesic = np.ones_like(geodesic)
+			
+			
+		return geodesic		
+		
+		
+	def superlinear_consistency(self, x):
+
+		x = x.copy()
+		constant = 0.005
+		uniform = np.ones_like(x)	
+		softmax = self.superlinear_softmax(x)
+		recognition, score = self.geodesic_logits_recognition(softmax)		
+	
+		kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+		kl_div = constant + np.log1p(kl_div)
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		slope = constant + np.mean(np.abs(np.diff(x)))
+		sigmoid = 1.0 / (1.0 - curvature)
+		
+		superlinear_manifold = sigmoid / 1.0 + slope
+		superlinear_conv = sigmoid / 1.0 + kl_div
+		superlinear_descent = superlinear_conv / 1.0 - slope
+		superlinear_equilibrium = superlinear_manifold / 1.0 - superlinear_descent
+		superlinear_geodesic = sigmoid / 1.0 + score
+		superlinear_efficient = superlinear_geodesic / 1.0 + superlinear_equilibrium
+		superlinear_consistency = superlinear_geodesic + superlinear_conv / superlinear_equilibrium + (1.0 - superlinear_descent)
+		projected = sigmoid / 1.0 + superlinear_consistency
+		
+		superlinear_similarity = projected / 1.0 + score
+		cons_score = superlinear_geodesic / 1.0 + superlinear_similarity
+	
+		refined = np.dot(recognition, superlinear_similarity)
+		
+		if np.isnan(refined).any() or not np.isfinite(refined).any():
+			refined = np.ones_like(refined)
+			
+		return refined, cons_score
+	
+	
+	def superlinear_uncertainty_estimator(self, x):
+
+		x = x.copy()
+		constant = 0.005
+		uniform = np.ones_like(x)
+		
+		softmax = self.superlinear_softmax(x)
+		recognition, score = self.geodesic_logits_recognition(softmax)	
+		caution = self.caution_logits_scanner(recognition)	
+				
+		kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+		kl_div = constant + np.log1p(kl_div)
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		slope = constant + np.mean(np.abs(np.diff(x)))
+		sigmoid = 1.0 / (1.0 - curvature)
+		
+		superlinear_manifold = sigmoid / 1.0 + slope
+		superlinear_conv = sigmoid / 1.0 + kl_div
+		superlinear_descent = superlinear_conv / 1.0 - slope
+		superlinear_equilibrium = superlinear_manifold / 1.0 - superlinear_descent
+		superlinear_geodesic = sigmoid / 1.0 + score		
+		superlinear_uncertain_geodesic = superlinear_geodesic / 1.0 - superlinear_descent
+		superlinear_certainty_guarantee = superlinear_equilibrium * score / 1.0 + (1.0 - superlinear_uncertain_geodesic)
+		certainty_projection = superlinear_conv / 1.0 + superlinear_certainty_guarantee
+		conclusion = sigmoid / 1.0 + certainty_projection 
+		
+		
+		refined = np.dot(caution, conclusion)
+
+		if np.isnan(refined).any() or not np.isfinite(refined).any():
+				refined = np.ones_like(refined)
+		
+		return refined
+		
+		
+	def credibility_confidence(self, x):
+		constant = 0.005
+		uniform = np.ones_like(x)
+				
+		softmax = self.superlinear_softmax(x)
+		recognition, score = self.geodesic_logits_recognition(softmax)	
+		caution = self.caution_logits_scanner(recognition)	
+				
+		kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+		kl_div = constant + np.log1p(kl_div)
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		slope = constant + np.mean(np.abs(np.diff(x)))
+		sigmoid = 1.0 / (1.0 - curvature)
+		
+		superlinear_manifold = sigmoid / 1.0 + slope
+		superlinear_conv = sigmoid / 1.0 + kl_div
+		superlinear_descent = superlinear_conv / 1.0 - slope
+		superlinear_equilibrium = superlinear_manifold / 1.0 - superlinear_descent
+		superlinear_geodesic = sigmoid / 1.0 + score			
+		superlinear_certaintiness = superlinear_geodesic / 1.0 + superlinear_equilibrium
+		superlinear_guarantee = superlinear_certaintiness * score / 1.0 - superlinear_manifold
+		superlinear_credibility = superlinear_conv / 1.0 + superlinear_certaintiness
+		conclusion = sigmoid / 1.0 + superlinear_credibility
+		
+		conclusion = np.clip(conclusion, 1e-8, None)
+		return conclusion	
+		
+		
+	def cellular_order_of_geodesic_encoder(self, x):
+		x = x.copy()
+		constant = 0.005
+		uniform = np.ones_like(x)
+		
+		kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+		kl_div = constant + np.log1p(kl_div)
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		slope = constant + np.mean(np.abs(np.diff(x)))
+		sigmoid = 1.0 / (1.0 - curvature)
+		
+		superlinear_manifold = sigmoid / 1.0 + slope
+		superlinear_conv = sigmoid / 1.0 + kl_div
+		superlinear_descent = superlinear_conv / 1.0 - slope
+		superlinear_equilibrium = superlinear_manifold / 1.0 - superlinear_descent
+		superlinear_geodesic = sigmoid / 1.0 + superlinear_manifold
+		conv = superlinear_conv / 1.0 + superlinear_geodesic
+		conclusion = conv / 1.0 + superlinear_geodesic		
+		
+		self.alpha = 0.1 * conclusion 
+		self.beta = 0.2 * conclusion
+		self.entropy_coef = 0.3 * conclusion 
+		self.threshold = 0.5 * conclusion
+		
+		params = np.array([self.alpha, self.beta, self.entropy_coef, self.threshold], dtype=np.float32)
+		scores = np.mean(params) / 1.0 + conclusion 
+
+		return scores
+
+				
+	def geodesic_master_regularization(self, x):
+		constant = 0.005
+		uniform = np.ones_like(x)
+		
+		softmax = self.superlinear_softmax(x)
+		recognition, score = self.geodesic_logits_recognition(softmax)		
+		robustness = self.geometric_robustness(x)
+		caution = self.caution_logits_scanner(recognition)
+		certainty = self.superlinear_uncertainty_estimator(caution)
+		consistency, conns_score= self.superlinear_consistency(certainty)
+		stability = self.matrix_lyapunov_evaluator(consistency)	
+		
+		a1 = self.superlinear_trajectory_encoder(softmax)
+		a2 = self.superlinear_distribution_algorithm(softmax)
+		combined_geodesic = a1 + a2 
+
+							
+		kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+		kl_div = constant + np.log1p(kl_div)
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		slope = constant + np.mean(np.abs(np.diff(x)))
+		sigmoid = 1.0 / (1.0 - curvature)
+		
+		superlinear_manifold = sigmoid / 1.0 + slope
+		superlinear_conv = sigmoid / 1.0 + kl_div
+		superlinear_descent = superlinear_conv / 1.0 - slope
+		superlinear_equilibrium = superlinear_manifold / 1.0 - superlinear_descent
+		superlinear_geodesic = sigmoid / 1.0 + score		
+		superlinear_regularization = stability / 1.0 + superlinear_geodesic
+		superlinear_certainty_geodesic = conns_score / 1.0 + superlinear_regularization 
+		superlinear_div = superlinear_certainty_geodesic / 1.0 - superlinear_descent
+		superlinear_robustness = robustness / 1.0 + superlinear_div
+		geodesic = superlinear_robustness / 1.0 + superlinear_regularization
+		equilibrium_bar = geodesic / 1.0 - superlinear_conv
+		equilibrium_regularization = superlinear_regularization * score / geodesic + (1.0 - superlinear_conv)
+		projection = sigmoid / 1.0 + equilibrium_regularization
+		
+		regularization1 = np.dot(combined_geodesic, projection)
+		regularization2 = np.dot(consistency, projection)
+		regularization3 = np.dot(recognition, projection)
+		combined_regularized = regularization1 + regularization2 + regularization3 
+		regularized_div = np.sum(combined_regularized * np.log(np.clip(combined_regularized, 1e-8, None)) - np.log(uniform))
+		regularized_div = sigmoid + np.log1p(regularized_div)		
+						
+		first_curve =  np.mean(np.abs(np.diff(np.diff(regularization1))))
+		sec_curve =  np.mean(np.abs(np.diff(np.diff(regularization2))))
+		third_curve =  np.mean(np.abs(np.diff(np.diff(regularization3))))
+		all_regularization = np.mean(np.abs(np.diff(np.diff(combined_regularized))))
+		eff_curve = first_curve * third_curve / 1.0 +  all_regularization - sec_curve
+		
+		superlinear_efficient = regularized_div / 1.0 + kl_div
+		kl_curve = superlinear_efficient / 1.0 - eff_curve
+		div_manifold = regularized_div / 1.0 + kl_curve
+		superlinear_geodesic = superlinear_efficient / div_manifold + projection 
+		equilibrium = equilibrium_regularization / 1.0 + superlinear_geodesic
+		projected = sigmoid / 1.0 + equilibrium
+		
+		refined = np.dot(softmax, projected)
+		auto = self.auto_geometric_trainer(refined)
+		
+		if np.isnan(refined).any() or not np.isfinite(refined).any():
+			refined = np.ones_like(refined)
+			
+			
+		return refined
+		
+	def meta_definitor(self, x, func):
+	
+		constant = 0.005
+		uniform = np.ones_like(x)	
+	
+		softmax = self.superlinear_softmax(x)					
+		recognition, score = self.geodesic_logits_recognition(softmax)		
+		robustness = self.geometric_robustness(recognition)
+		caution = self.caution_logits_scanner(x)
+		credibility = self.credibility_confidence(caution)
+		certainty = self.superlinear_uncertainty_estimator(caution)
+		consistency, conns_score = self.superlinear_consistency(certainty)
+		stability = self.matrix_lyapunov_evaluator(consistency)
+
+		reward = self.geodesic_reward(consistency, func)
+		
+		anthropic = self.superlinear_anthropic_causalities_modelling(softmax)
+		distribution = self.superlinear_distribution_algorithm(softmax)				
+		regularization = self.geodesic_master_regularization(softmax)
+		logistic, sat = self.logistic_dynamical_regressive_bots(softmax)			
+		agent = self.geodesic_logistic_agent(softmax, sat)
+		modelling = self.logistic_dynamic_modelling(softmax)		
+				
+		kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+		kl_div = constant + np.log1p(kl_div)
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		slope = constant + np.mean(np.abs(np.diff(x)))
+		sigmoid = 1.0 / (1.0 - curvature)
+		
+		superlinear_manifold = sigmoid / 1.0 + slope
+		superlinear_conv = sigmoid / 1.0 + kl_div
+		superlinear_descent = superlinear_conv / 1.0 - slope
+		superlinear_equilibrium = superlinear_manifold / 1.0 - superlinear_descent
+		superlinear_geodesic = sigmoid / 1.0 + score
+		
+		superlinear_credibility = credibility / 1.0 + superlinear_manifold
+		superlinear_satisfiability = superlinear_credibility * reward / 1.0 + superlinear_geodesic
+		superlinear_robustness = robustness / 1.0 - superlinear_equilibrium
+		superlinear_equilibrium = superlinear_robustness + superlinear_credibility / superlinear_satisfiability + (1.0 - superlinear_descent) 
+		superlinear_uncertainty = reward / 1.0 - superlinear_satisfiability		
+		stability_consistency = conns_score / 1.0 + superlinear_uncertainty
+		
+		stability_conclusion = superlinear_equilibrium / 1.0 + stability_consistency
+		geodesic_score = score / 1.0 + stability_conclusion
+		satisfiability = sigmoid / 1.0 + geodesic_score
+		
+		imbrium_confidence = self.conns.cellular_mind(x, stability, satisfiability, 10, self.input)		
+		if satisfiability >= stability:
+			if imbrium_confidence:
+				return agent[0]
+			else:
+				distributed = regularization + distributed
+				return logistic[0]
+		else:
+			if imbrium_confidence:
+				return modelling[0]	
+			else:
+				causalities = regularization + anthropic
+				return causalities[0]
+	
+		
+								
+		
+		
+	def auto_geometric_trainer(self, x):
+	   constant = 0.005
+	   uniform = np.ones_like(x)
+	   kl_div = np.sum(x * np.log(np.clip(x, 1e-8, None)) - np.log(uniform))
+	   kl_div = constant + np.log1p(kl_div)
+	   curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+	   sigmoid = 1.0 / (1 - curvature)
+	   
+	   equilibrium = self.conns.net_equilibrium	
+	   multipliers = self.conns.multipliers 
+	   mutation = self.conns.mutation
+	   matrix_bias = self.conns.bias 
+	   learning = self.superlinear_lr 
+	
+	   
+	   net_equilibrium = mutation * learning / 1.0 + (multipliers - equilibrium)
+	   net_multipliers = (1.0 + net_equilibrium) * learning / (1/2 * multipliers) 
+	   net_equilibrium = mutation * learning  / 1.0 + (multipliers - equilibrium)				
+	   concluded_equilibrium = net_multipliers * matrix_bias / mutation - net_equilibrium
+	   
+	   a1 = self.forward_algorithm(x)
+	   a2 = self.tune_algorithm(a1)
+	   a3 = self.chain_algorithm(a2)
+	   combined_geometry = a1 + a2 + a3	
+	   adapt_div = np.sum(combined_geometry * np.log(np.clip(combined_geometry, 1e-8, None)) - np.log(uniform))
+	   adapt_div = sigmoid + np.log1p(adapt_div)
+	   div_ratio = adapt_div / 1.0 + kl_div
+	   projection_loss = div_ratio / 1.0 - learning
+	   equilibrium = sigmoid / 1.0 + projection_loss
+	   internal_geometry_measurement = combined_geometry / 1.0 + equilibrium
+	   adapted_logits = self.superlinear_softmax(internal_geometry_measurement)	
+	   	   	   
+	   first_curve = np.mean(np.abs(np.diff(np.diff(a1))))
+	   sec_curve = np.mean(np.abs(np.diff(np.diff(a2))))
+	   third_curve = np.mean(np.abs(np.diff(np.diff(a3))))	   
+	   eff_curve = first_curve + sec_curve * third_curve / (1.0 + third_curve) - curvature
+	   
+	   efficient_kl = adapt_div / 1.0 + div_ratio
+	   kl_curve = efficient_kl / 1.0 + eff_curve
+	   div_manifold = div_ratio / 1.0 - kl_curve
+	   adapt_manifold = efficient_kl * concluded_equilibrium / learning + div_manifold 
+	   adapt_manifold_loss = kl_curve / 1.0 - div_manifold
+	   adapt_rate = efficient_kl * kl_curve / adapt_manifold + (1.0 - adapt_manifold_loss)
+	   equilibrium = adapt_rate / 1.0 + adapt_manifold_loss
+
+	   imbrium = self.conns.cellular_mind(x, adapt_manifold_loss, adapt_rate, 10, self.input)		
+	   if not imbrium:
+	   	dynamic_stability = self.matrix_lyapunov_evaluator(adapted_logits)
+	   	if not dynamic_stability:
+	   		equilibrium = adapt_rate / 1.0 + div_manifold 
+	   		self.weight_manifold /= adapt_rate
+	   		self.bias_manifold /= adapt_rate
+	   		self.superlinear_lr /= equilibrium	
+	   	else:
+	   		self.weight_manifold = self.weight_manifold
+	   		self.bias_manifold = self.bias_manifold
+	   		self.superlinear_lr = adapt_rate
+	   		
+	   if np.isnan(adapted_logits).any() or not np.isfinite(adapted_logits).any():
+	   	adapted_logits = np.ones_like(adapted_logits)
+	   	
+	   return adapted_logits 				
+																					
+
+nn = CellularAutomataNet(input=20, layers=[126, 254, 140, 70],output=20)
