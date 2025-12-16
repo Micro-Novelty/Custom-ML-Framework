@@ -52,11 +52,14 @@ C. 3 fundamental logistic equation derived to acquire the thorough geodesic info
 3. simplified moduli space equations combined with geodesic mapping efficiency to ensure both logistic and superlinear growth to maximize information gather efficiency and stability ensuring both appear in geometric efficiency through moduli space search with trA3 > 0 and range 0 -> finite numbers with any given positive logits, this equation will provide implicit eigenvalues to the model (as shown in the geodesic_optimum) that can map any geodesic topological space where it will ensure the models stability and convergence.
 
 		    
-```trA1 = projection / (1.0 - slope)
+```
+trA1 = projection / (1.0 - slope)
    trA2 = (1/2) + stability_modelling / 1.0 + trA1**2
    trA3 = (1/6) + logistic1 / (trA2**2) - 1.0
-   geodesic_optimum = np.dot(x, trA3)```
+geodesic_optimum = np.dot(x, trA3)
+```
 			    
+
 
 ●. Curvature:
 Curvature Is Used to calculate the geometry curve of the logits and the curvature of each Nested logit or Probabilities Simulation.
