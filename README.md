@@ -1,6 +1,7 @@
 # Custom-ML-Framework
 This Framework Was Purely Custom Made by us (Me and my Friend after school) And we Have conducted some analytical test of It (lyapunov stability test, spectral radius, exploration vs exploitation evaluation), although, This repository contains the Whole Block of cellularAutomataNet, Epsitron Transformer, And EpsilonPolicy, etc to provide originality of development. Hope you understand the rigorous math and its Functions. Have Fun Checking and testing :)
 Creator = Anonimity X.11 / Indonesia 
+AbsoluteTestForMaximumGeneratedCodeBlue7555899
 
 # Mathematical Foundation And Expression
 
