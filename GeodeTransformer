@@ -1,0 +1,126 @@
+class GeodeTransformer:
+    def __init__(self, norm_layer=5, dist_layer=3):
+        self.norm_layer = norm_layer
+        self.distribution_layer = dist_layer
+        self.alpha = 1/137.035999084  # Fine-structure constant
+        
+    def softmax(self, x, axis=-1):
+        """Numerically stable softmax"""
+        x_max = np.max(x, axis=axis, keepdims=True)
+        exp_x = np.exp(x - x_max)
+        return exp_x / np.sum(exp_x, axis=axis, keepdims=True)
+    
+    def layer_norm(self, x, eps=1e-8):
+        """Simple layer normalization"""
+        mean = np.mean(x, axis=-1, keepdims=True)
+        std = np.std(x, axis=-1, keepdims=True)
+        return (x - mean) / (std + eps)
+    
+    def geodesic_layer_norm(self, x):
+        """YOUR ORIGINAL GEODESIC LAYER NORM - FULLY PRESERVED"""
+        constant = self.alpha
+        norm_layer = self.norm_layer
+        distribution_layer = self.distribution_layer
+        
+        original_shape = x.shape
+        if x.ndim == 1:
+            x = x.reshape(1, -1)
+        batch_size, seq_len = x.shape if x.ndim == 2 else (1, x.shape[0])
+        if x.ndim == 2:
+           curvature = constant + np.mean(np.abs(np.diff(np.diff(x, axis=-1), axis=-1)), axis=-1, keepdims=True)
+           slope = constant + np.mean(np.abs(np.diff(x, axis=-1)), axis=-1, keepdims=True)
+        else:
+           curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+           slope = constant + np.mean(np.abs(np.diff(x)))
+           curvature = np.array([[curvature]])
+           slope = np.array([[slope]])
+        curvature = np.broadcast_to(curvature, (batch_size, 1))
+        slope = np.broadcast_to(slope, (batch_size, 1))
+        sigmoid = 1.0 / (1.0 - curvature + 1e-8)
+        geodesic_manifold = 1.0 + sigmoid / (slope + 1e-8)
+        
+        geodesic_conv = 1.0 + sigmoid / (1.0 - geodesic_manifold + 1e-8)
+        geodesic_div = sigmoid - 1.0 / (1.0 + geodesic_conv + 1e-8)
+        layer_norm = 1.0 + norm_layer / distribution_layer - 1.0
+        
+        layer_norm = np.full((batch_size, 1), layer_norm)
+        
+        geodesic_layering = 1.0 + layer_norm / (1.0 - slope + 1e-8)
+        logistic_growth = 1.0 + geodesic_layering / (sigmoid + 1e-8)
+        
+        trA1 = geodesic_layering / (1.0 - slope + 1e-8)  # Shape: (batch_size, 1)
+        trA2 = (1/2) + layer_norm / (1.0 + trA1**2)      # Shape: (batch_size, 1)
+        trA3 = (1/6) + logistic_growth / (trA2**2 + 1e-8) - 1.0  # Shape: (batch_size, 1)
+        if x.ndim == 1:
+            x_2d = x.reshape(1, -1)
+        else:
+            x_2d = x
+        trA1_flat = trA1.flatten()
+        trA2_flat = trA2.flatten()
+        trA3_flat = trA3.flatten()
+        if batch_size == 1:
+           Q_encoder = np.dot(x_2d, trA1_flat)
+           K_encoder = np.dot(x_2d, trA2_flat)
+           V_encoder = np.dot(x_2d, trA3_flat)
+        else:
+           Q_encoder = np.zeros((batch_size, seq_len))
+           K_encoder = np.zeros((batch_size, seq_len))
+           V_encoder = np.zeros((batch_size, seq_len))
+           for i in range(batch_size):
+               x_i = x_2d[i].reshape(1, -1)
+               Q_encoder[i] = np.dot(x_i, trA1_flat[i])
+               K_encoder[i] = np.dot(x_i, trA2_flat[i])
+               V_encoder[i] = np.dot(x_i, trA3_flat[i])
+        conclusion_norm = 1.0 + geodesic_layering / (logistic_growth + 1e-8) - 1.0
+        conclusion_norm_flat = conclusion_norm.flatten()
+        if batch_size == 1:
+            normed = np.dot(x_2d, conclusion_norm_flat)
+        else:
+           normed = np.zeros((batch_size, seq_len))
+           for i in range(batch_size):
+               x_i = x_2d[i].reshape(1, -1)
+               normed[i] = np.dot(x_i, conclusion_norm_flat[i])
+        if len(original_shape) == 1:
+           normed = normed.flatten()
+           Q_encoder = Q_encoder.flatten()
+           K_encoder = K_encoder.flatten()
+           V_encoder = V_encoder.flatten()
+        if np.any(np.isnan(normed)) or not np.all(np.isfinite(normed)):
+           normed = np.ones_like(x_2d) if x_2d.ndim == 2 else np.ones_like(x)
+           if len(original_shape) == 1:
+                normed = normed.flatten()
+        return normed, Q_encoder, K_encoder, V_encoder
+    
+    def geodesic_transformation_encoder(self, x):
+        """YOUR ORIGINAL GEODESIC TRANSFORMATION ENCODER - FULLY PRESERVED"""
+        constant = 1/137
+        norm_layer = self.norm_layer
+        distribution_layer = self.distribution_layer
+        uniform = np.ones_like(x)    
+        normed, Q, K, V = self.geodesic_layer_norm(x)
+        
+        Q_curve = constant + np.mean(np.abs(np.diff(np.diff(Q))))
+        K_curve = constant + np.mean(np.abs(np.diff(np.diff(K))))        
+        V_curve = constant + np.mean(np.abs(np.diff(np.diff(V))))    
+        rational_ratio = 1.0 + K_curve / (1.0 + V_curve) - Q_curve
+        sigmoid = 1.0 / (1.0 - rational_ratio)
+        kl_div = np.sum(normed * np.log(np.clip(normed, 1e-8, None)) - np.log(uniform))
+        kl_div = constant + np.log1p(kl_div)
+        
+        superlinear_growth = rational_ratio / 1.0 + sigmoid 
+        logistic_growth = 1.0 + sigmoid / rational_ratio - 1.0
+        geodesic_manifold = 1.0 + superlinear_growth / logistic_growth
+        geodesic_conv = geodesic_manifold / (1.0 + superlinear_growth)
+        geodesic_div = 1.0 + sigmoid / kl_div
+        internal_metrics = geodesic_conv / 1.0 + geodesic_div
+        equilibrium_encoded = 1.0 + internal_metrics / (1.0 - geodesic_manifold)
+        stability_ensured = 1.0 + equilibrium_encoded / (1.0 - internal_metrics)
+        
+        attention_refined = np.dot(x, stability_ensured)
+        if np.isnan(attention_refined).any() or not np.isfinite(attention_refined).any():
+            attention_refined = np.ones_like(x)
+        return attention_refined
+        
+    def forward(self, x):
+        """Simple forward pass - YOUR ORIGINAL"""
+        return self.geodesic_transformation_encoder(x)
