@@ -196,7 +196,40 @@ class VectorizedTangent:
 				if np.isnan(refinement).any() or not np.isfinite(refinement).any():
 					refinement = np.ones_like(x)
 				return refinement, mag		
-														
+
+
+			def adaptive_lambda(anisotropy, groundedness,     lambda_base=0.05, alpha=1.0, beta=1.0, gamma=1.0,lambda_min=0.01, lambda_max=1.0):
+			     if self.linear:
+			          if self.coherence1 and len(self.coherence1) >= 3:
+			             var_coh = np.var(self.coherence1)
+			     elif self.nonlinear:
+			           if self.coherence2 and len(self.coherence2) >= 2:
+			             	var_coh = np.var(self.coherence2)
+			     elif self.uncertainty:
+			         if self.coherence3 and len(self.coherence3) >= 2:
+			             var_coh = np.var(self.coherence3)
+			     else:
+			          var_coh = 1.0 + groundedness / anisotropy
+			          
+			     a = anisotropy / (1.0 + anisotropy)
+			     g = groundedness / (1.0 + groundedness)
+			     v = var_coh / (1.0 + var_coh)
+			     lambda_eff = lambda_base * (1 + alpha*a + beta*v + gamma*(1 - g))
+			     return np.clip(lambda_eff, lambda_min, lambda_max)
+                
+								
+			def update_epistemic_stability(self, coherence_buffer, anisotropy, groundedness):
+				lambda_decay = self.adaptive_lambda(anisotropy, groundedness, lambda_base=0.05, alpha=1.0, beta=1.0, gamma=1.0, lambda_min=0.01, lambda_max=1.0)             
+					
+				a = anisotropy / (1.0 + anisotropy)
+				coherence_buffer *= np.exp(-lambda_decay * a)
+				mean_coh = np.mean(coherence_buffer)
+				var_coh  = np.var(coherence_buffer)
+				trend    = np.mean(np.diff(coherence_buffer)) if len(coherence_buffer) > 1 else 0.0
+				epistemic_stability = mean_coh * np.exp(-var_coh)
+				return epistemic_stability, trend														
+				
+								
 			def internal_tolerance_of_causality(self, x):
 				eps = 1e-6
 				constant = 1/137
@@ -654,13 +687,14 @@ class VectorizedTangent:
 					refinement = np.ones_like(x)
 				return refinement				
 
-												
 			def coherent_long_term_planning(self, x):
+				
 				eps = 1e-5
 				constant = 1/137
 				cache1 = self.cache1
 				cache2 = self.cache2
 				cache3 = self.cache3
+				gate_coherences = None
 				
 				if not self.outer.parameters:
 					self.outer.weight_embedding_module(x)
@@ -674,21 +708,20 @@ class VectorizedTangent:
 				sigmoid = 1.0 / (1.0 - curvature)
 										
 				weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, sigmoid, atol=similarity))]
-				bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, sigmoid, atol=similarity))]	
 				if self.linear:
 					linear_wm = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, relation, atol=similarity))]				
 					if linear_wm:
 						for match in linear_wm:
 							wm, idx = reasoning_params[match]
 							
-						refinement, relation = self.outer._cache_relations(wm, x)
+						first_refinement, relation = self.outer._cache_relations(wm, x)
 						caches = len(cache1)
 						if caches >= 3:
-							for key, (idx, value) in enumerate(cache1.items):
+							for key, (idx, value) in enumerate(cache1.items()):
 								anisotropy = value[1].copy()					
 								conf = value[2].copy()
 									
-								squared  = eps + (value[0] - refinement) ** 2
+								squared  = eps + (value[0] - first_refinement) ** 2
 								mse = np.sum(squared) / len(x)
 								rmse = np.sqrt(mse)					
 								squared2  = eps + (value[0] - x) ** 2
@@ -705,9 +738,10 @@ class VectorizedTangent:
 								soft_coherences = np.exp(-np.abs(np.log(ratio)))
 								
 								self.coherence1.append(soft_coherences)
-								
+								gate_coherences, trend = self.update_epistemic_stability(self.coherence1, anisotropy, grounded_rationality)
+								refinement = trend.copy()									
 						else:
-							uncertainty, soft_coherences = self.outer.uncertainty_handling_module(refinement, type="weight")
+							uncertainty, soft_coherences = self.outer.uncertainty_handling_module(first_refinement, type="weight")
 							refinement = uncertainty.copy()
 
 
@@ -717,14 +751,14 @@ class VectorizedTangent:
 						for match in nonlinear_wm:
 							wm, idx = reasoning_params[match]
 							
-						refinement, relation = self.outer._cache_relations(wm, x)						
+						first_refinement, relation = self.outer._cache_relations(wm, x)						
 						caches = len(cache2)
 						if caches >= 3:
-							for key, (idx, value) in enumerate(cache2.items):
+							for key, (idx, value) in enumerate(cache2.items()):
 								anisotropy = value[1].copy()					
 								conf = value[2].copy()
 									
-								squared  = eps + (value[0] - w) ** 2
+								squared  = eps + (value[0] - first_refinement) ** 2
 								mse = np.sum(squared) / len(x)
 								rmse = np.sqrt(mse)					
 								squared2  = eps + (value[0] - x) ** 2
@@ -741,8 +775,10 @@ class VectorizedTangent:
 								soft_coherences = np.exp(-np.abs(np.log(ratio)))
 								
 								self.coherence2.append(soft_coherences)
+								gate_coherences, trend = self.update_epistemic_stability(self.coherence2, anisotropy, grounded_rationality)
+								refinement = trend.copy()										
 						else:
-							uncertainty, soft_coherences = self.outer.uncertainty_handling_module(refinement, type="weight")
+							uncertainty, soft_coherences = self.outer.uncertainty_handling_module(first_refinement, type="weight")
 							refinement = uncertainty.copy()
 					
 				elif self.uncertainty:
@@ -751,14 +787,14 @@ class VectorizedTangent:
 						for match in unc_w:
 							w, idx = parameters[match]					
 							
-						refinement, relation = self.outer._cache_relations(w, x)						
+						first_refinement, relation = self.outer._cache_relations(w, x)						
 						caches = len(cache3)
 						if caches >= 3:
 							for key, (idx, value) in enumerate(cache3.items()):
 								anisotropy = value[1].copy()					
 								conf = value[2].copy()
 									
-								squared  = eps + (value[0] - w) ** 2
+								squared  = eps + (value[0] - first_refinement) ** 2
 								mse = np.sum(squared) / len(x)
 								rmse = np.sqrt(mse)					
 								squared2  = eps + (value[0] - x) ** 2
@@ -775,17 +811,31 @@ class VectorizedTangent:
 								soft_coherences = np.exp(-np.abs(np.log(ratio)))
 								
 								self.coherence3.append(soft_coherences)
+								gate_coherences, trend = self.update_epistemic_stability(self.coherence3, anisotropy, grounded_rationality)
+								refinement = trend.copy()												
 						else:
-							uncertainty, soft_coherences = self.outer.uncertainty_handling_module(refinement, type="weight")
+							uncertainty, soft_coherences = self.outer.uncertainty_handling_module(first_refinement, type="weight")
 							refinement = uncertainty.copy()
 																									
 				else:
 					uncertainty, soft_coherences = self.outer.uncertainty_handling_module(x, type=None)
 					refinement = uncertainty.copy()
+					
+				softer = np.exp(-np.abs(np.log(soft_coherences)))
+				inertia = 1.0 + softer / min(soft_coherences, mag)
+				coherences_gate = (relation % similarity) / inertia
+				final_gate = max(softer, coherences_gate)
+				planning_conclusion = final_gate >= 0.5				
 				
-				strategic_imp = self.execute_planned_reasoning(refinement)
-						
-				return strategic_imp					
+				if planning_conclusion:
+				
+					strategic_imp = self.execute_planned_reasoning(refinement)
+				else:
+					strategic_imp = self.factual_concrete_reasoning(refinement)
+										
+				return strategic_imp
+																
+
 		
 		class SimulativeSequence:
 			def __init__(self, outer):
@@ -980,11 +1030,19 @@ class VectorizedTangent:
 		generative_projection = 1.0 + sensitive_sigmoid / (1.0 - generative_space)
 		equilibrium_certainty = 1.0 + sensitive_sigmoid / (1.0 - generative_projection)
 		equilibrium_uncertainty = 1.0 / (1.0 - equilibrium_certainty)
-			
-		matching_relations = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, equilibrium_certainty, atol=1e-3))]
-				
-		if type == 'weight':
-			match_weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, equilibrium_certainty, atol=1e-3))]	
+		
+		if self.linear:
+			sample = x.flatten()			
+			n = np.gradient(sample)
+			g1 = [np.linalg.norm(ns) for ns in n]
+			anisotropy = np.std(g1) / np.mean(g1) + 1e-6
+			doubt = anisotropy
+		else:
+			doubt = equilibrium_certainty
+						
+		matching_relations = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, doubt, atol=1e-3))]								
+		if type == 'weight':												
+			match_weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, doubt, atol=1e-3))]	
 			if match_weight:
 				for match in match_weight:
 					w, query = parameters[match]
@@ -998,7 +1056,7 @@ class VectorizedTangent:
 				self.parameters["w_replace"] = refinement, equilibrium_certainty							
 																							
 		elif type == 'bias':
-			match_bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, equilibrium_certainty, atol=1e-3))]	
+			match_bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, doubt, atol=1e-3))]	
 			if match_bias:
 				for match in match_bias:
 					b, query = parameters[match]
@@ -1023,16 +1081,20 @@ class VectorizedTangent:
 			self.parameters["w_replace"] = refinement, equilibrium_certainty		
 				
 		if modulo_distribution is None:
-			modulo_distribution = eps + equilibrium_certainty % equilibrium_uncertainty				
+			modulo_distribution = eps + equilibrium_certainty % equilibrium_uncertainty
+			
+		max_inertia = 1.0 + modulo_distribution / max(modulo_distribution, doubt)	
 			
 		modulo_gen_conf = modulo_distribution / (1.0 - generative_projection)
 		modulo_certainty_score = 1.0 + modulo_gen_conf / (1.0 + equilibrium_certainty)
+		doubt_high_modulo = 1.0 + modulo_certainty_score / max_inertia**2
 			
 
 		if np.isnan(refinement).any() or not np.isfinite(refinement).any():
 			refinement = np.ones_like(x)
 			
-		return refinement, modulo_certainty_score
+		return refinement, doubt_high_modulo
+						
 						
 		
 	def network_feed_forward_activations(self, x):	
