@@ -1,0 +1,1477 @@
+class VectorizedTangent:
+	def __init__(self, layers=[70, 160, 256, 135, 60], computational_limit=100):		
+		self.layers = layers
+		self.limit = computational_limit
+						
+		self.parameters = {}
+		self.reasoning_params = {}
+		
+		self.linear = False
+		self.nonlinear = False
+		self.uncertainty = False	
+				
+
+	def weight_embedding_module(self, x):
+		sample = len(x)
+		layers = self.layers
+		eps = 1e-5
+						
+		for i in range(layers[0] + layers[1] + layers[2]):
+			init = np.random.randn(sample)
+			init_bias = np.random.uniform(0, i, size=x.shape)
+				
+			curvature = np.mean(np.abs(np.diff(np.diff(init))))
+			slope = np.mean(np.abs(np.diff(init_bias)))
+			sigmoid_1 = eps + (1.0 / 1.0 - curvature)	
+			geodesic_manifold = sigmoid_1 / (1.0 + slope)			
+			self.parameters[f"w{i}"] = init, sigmoid_1
+			self.parameters[f"b{i}"] = init_bias, geodesic_manifold
+			
+		for i in range(layers[2] + layers[3] + layers[4]):	
+			init_reason= np.random.randn(sample)
+			curvature = np.mean(np.abs(np.diff(np.diff(init_reason))))	
+			sigmoid_2 = eps + (1.0 / 1.0 - curvature)	
+			
+			self.reasoning_params[f"wm{i}"] = init_reason, sigmoid_2
+			
+		if len(self.parameters) >= self.limit:
+			oldest_data = next(iter(self.parameters))
+			del self.parameters[oldest_data]
+			
+		elif len(self.reasoning_params) >= self.limit:
+			oldest_key = next(iter(self.reasoning_params))
+			del self.reasoning_params[oldest_key]								
+		
+	def leaky_relu(self, x):
+		constant = 1/137 
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		sigmoid = 1.0 / (1.0 - curvature)
+		geodesic_manifold = 1.0 + sigmoid / (curvature - 1.0)
+
+		rectified = np.where(x > 0, x, geodesic_manifold * x)
+		return rectified		
+			
+	def small_predictive_embedding_module(self, x):
+		x = x.copy()	
+		class PredictiveSimilarity:
+			def __init__(self, outer):
+				self.x = x.copy()
+				self.outer = outer
+				
+				self.linear = self.outer.linear
+				self.nonlinear = self.outer.nonlinear 
+				self.uncertainty = self.outer.uncertainty
+				
+				self.cache1 = {}
+				self.cache2 = {}
+				self.cache3 = {}
+				
+				self.coherence1 = []
+				self.coherence2 = []
+				self.coherence3 = []				
+								
+				self.uncertainty_count = 0		
+				
+								
+			def sub_pattern_similarity(self, x):
+				eps = 1e-5
+				constant = 1/137
+				
+				uniform = np.ones_like(x)				
+				prob_dist = x / np.sum(x)
+				prob_dist = prob_dist[prob_dist > 0]
+				
+				entropy = -np.sum(prob_dist * np.log2(prob_dist))			
+				curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+				
+				slope = constant + np.mean(np.abs(np.diff(x)))
+				sigmoid = 1.0 / (1.0 - curvature)
+				
+				geodesic_space = 1.0 + sigmoid / (1.0 - slope)
+				geodesic_manifold = sigmoid / (1.0 - geodesic_space)				
+				geodesic_div = geodesic_space / (1.0 - geodesic_manifold**2)	
+				geodesic_conv = 1.0 + geodesic_space / ( geodesic_div - 1.0)
+				growth = geodesic_conv / (1.0 + geodesic_manifold)
+				
+				conv_ratio = growth / geodesic_conv	
+				conv_score = np.tanh(conv_ratio)		
+				
+				trade_off_ratio = 1.0 + (conv_score / entropy)							
+				trade_off_ratio = np.nan_to_num(trade_off_ratio, nan=0.0, posinf=1e340, neginf=1e-340)
+				
+				return trade_off_ratio
+			
+			def _comparative_linearities(self, x1, x2):
+				eps = 1e-5
+				
+				linear1 = np.std(np.diff(x1))
+				linear2 = np.std(np.diff(x2))
+				dist1 = x1 / np.sum(x1)
+				dist2 = x2 / np.sum(x2)
+				
+				entropy1 = -np.sum(dist1 * np.log2(dist1))
+				entropy2 = -np.sum(dist2 * np.log2(dist2))
+				
+				mutual_linear_ratio = eps + (linear1 / linear2)	
+				entropy_ratio = 1.0 + entropy2 / 1.0 + entropy1	
+				mutual_entropy_loss = mutual_linear_ratio / 1.0 - entropy_ratio
+				
+				sample1 = np.dot(x1, mutual_entropy_loss)
+				sample2 = np.dot(x2, mutual_entropy_loss)
+				sample1 = sample1.flatten()
+				sample2 = sample2.flatten()
+				
+				ma1 = np.linalg.norm(np.gradient(sample1))
+				ma2 = np.linalg.norm(np.gradient(sample1))
+				
+				if isinstance(x[0], np.ndarray) or isinstance(x[0], list):
+					g = np.gradient(x[0])
+				else:
+					g = np.gradient(x)
+															
+				g1 = [np.linalg.norm(version1) for version1 in g]	
+				anisotropy = np.std(g1) / eps + np.mean(g1)				
+				linearity_score1 = ma1 / (1.0 + anisotropy)
+				linearity_score2 = ma2 / (1.0 + anisotropy)					
+				if linearity_score1 < linearity_score2:
+					refined = sample1
+					mag = anisotropy
+					
+					self.nonlinear = False
+					self.linear = True
+				elif linearity_score2 > linearity_score1:
+					refined = sample2
+					mag = anisotropy
+					
+					self.linear = False
+					self.nonlinear = True
+				else:
+					refined, mag = self.outer.uncertainty_handling_module(x)
+				
+				self.outer.reasoning_params["wm_replace"] = refined, mag
+				self.outer.parameters["w_replace"] = refined, mag
+				
+				return refined, mag											
+									
+			def factual_concrete_reasoning(self, x):			
+				if not self.outer.parameters:
+					self.outer.weight_embedding_module(x)
+				parameters = self.outer.parameters
+				reasoning_params = self.outer.reasoning_params
+						
+				flat = x.flatten()
+				prob_dist = flat / np.sum(flat)
+				prob_dist = prob_dist[prob_dist > 0]	
+							
+				linear_slope_consistency = np.std(np.diff(x))
+				entropy = -np.sum(prob_dist * np.log2(prob_dist))
+				
+				measure_unapproximated = linear_slope_consistency / (1.0 + entropy)	
+				similarity = 1.0 + measure_unapproximated / 1.0 - entropy
+							
+				linear_weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, measure_unapproximated, atol=similarity))]
+				linear_bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, measure_unapproximated, atol=similarity))]							
+				linear_wm = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, measure_unapproximated, atol=similarity))]
+				if linear_wm and linear_weight or linear_bias and linear_wm:
+					for match2 in linear_wm:
+						wm, idx = reasoning_params[match2]					
+					if linear_weight:
+						for match in linear_weight:
+							ref, idx = parameters[match]
+					else:
+						for match in linear_bias:
+							ref, idx = parameters[match]		
+																	
+					wm, relation = self.outer._cache_relations(wm, x)
+					ref, relations = self.outer._cache_relations(ref, x)
+					refinement, mag = self._comparative_linearities(wm, ref)	
+					
+				else:
+					uncertainty_handle, certainty = self.outer.uncertainty_handling_module(x, type=None)
+					refinement = uncertainty_handle
+					mag = certainty
+					self.outer.parameters["w_replace"] = refinement, mag
+					self.outer.reasoning_params["wm_replace"] = refinement, mag
+				
+				if np.isnan(refinement).any() or not np.isfinite(refinement).any():
+					refinement = np.ones_like(x)
+				return refinement, mag		
+														
+			def internal_tolerance_of_causality(self, x):
+				eps = 1e-6
+				constant = 1/137
+				cache1 = self.cache1
+				cache2 = self.cache2
+				cache3 = self.cache3
+				
+				if not self.outer.parameters:
+					self.outer.weight_embedding_module(x)
+							
+				parameters = self.outer.parameters
+				reasoning_params = self.outer.reasoning_params
+				similarity = self.sub_pattern_similarity(x)	
+				refined, mag = self.factual_concrete_reasoning(x)
+				
+				curvature = constant + np.mean(np.abs(np.diff(np.diff(refined))))
+				sigmoid = 1.0 / (1.0 - curvature)
+				
+				if isinstance(x[0], np.ndarray) or isinstance(x[0], list):
+					g = np.gradient(x[0])	
+				else:
+					g = np.gradient(x)	
+							
+				v = [np.linalg.norm(gs) for gs in g]
+				sim_anisotropy = np.std(v) / np.mean(v) + 1e-6
+				
+				wm = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, sim_anisotropy, atol=similarity))]								
+				weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, sigmoid, atol=similarity))]
+				bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, sigmoid, atol=similarity))]			
+									
+				if self.linear:
+					cache_lin = [key for key, (arr, idx, conf) in cache1.items() if key.startswith("wm") and np.any(np.isclose(arr, mag, atol=similarity))]									
+					for match in weight:
+						w, idx = parameters[match]
+					for match2 in cache_lin:
+						cl, anisotropy, conf = cache1[match2]	
+					flatten = len(cl.flatten())
+					
+					anisotropy = anisotropy.copy()
+					conf = conf.copy()
+																		
+					w, query = self.outer._cache_relations(w, x)		
+					cl, query = self.outer._cache_relations(cl, x)
+					
+					squared  = eps + (cl - w) ** 2
+					mse = np.sum(squared) / len(x)
+					rmse = np.sqrt(mse)					
+					squared2  = eps + (cl - x) ** 2
+					mse2 = np.sum(squared2) / len(x)
+					grounded_rmse = np.sqrt(mse2)		
+					mutual_groundedness = 1.0 + mse / grounded_rmse
+					
+					belief = conf / 1.0 + mutual_groundedness
+					tolerance = 1.0 + anisotropy / conf
+					mutual_depth = 1.0 + belief / tolerance
+					grounded_rationality = (1.0 + grounded_rmse) / mutual_depth
+					
+					ratio = grounded_rationality / (mutual_groundedness + eps)
+					soft_gate = np.exp(-np.abs(np.log(ratio)))
+					
+					if anisotropy >= mutual_depth:
+						creative_gate = (grounded_rationality % mutual_groundedness) / mutual_groundedness
+						final_gate = max(soft_gate, creative_gate)
+					else:
+						final_gate = soft_gate		
+									
+					acceptance = final_gate >= 0.5
+					if acceptance:
+						refinement = cl.copy()
+						relations = mutual_groundedness
+					else:
+						refinement, relation = self.outer.uncertainty_handling_module(cl, type="weight")
+						relations = 1.0 + relation / mutual_groundedness
+						
+				elif self.nonlinear:
+					cache_nonl = [key for key, (arr, idx, conf) in cache2.items() if key.startswith("wm") and np.any(np.isclose(arr, mag, atol=similarity))]
+					
+					for match in bias:
+						b, idx = parameters[match]
+					for match2 in cache_nonl:
+						cl, anisotropy, conf = cache2[match2]
+						
+					flatten = len(cl.flatten())
+					
+					anisotropy = anisotropy.copy()
+					conf = conf.copy()								
+									
+					b, query = self.outer._cache_relations(b, x)		
+					cl, query = self.outer._cache_relations(cl, x)
+					
+					squared  = eps + (cl - b) ** 2
+					mse = np.sum(squared) / len(x)
+					rmse = np.sqrt(mse)					
+					squared2  = eps + (cl - x) ** 2
+					mse2 = np.sum(squared2) / len(x)
+					grounded_rmse = np.sqrt(mse2)	
+					mutual_groundedness = 1.0 + rmse / 1.0 + grounded_rmse
+					
+					belief = conf / (1.0 + mutual_groundedness)
+					tolerance = anisotropy / (1.0 + conf)
+					mutual_depth = belief / (1.0 + tolerance)
+					grounded_rationality = (1.0 + grounded_rmse) / mutual_depth
+					
+					ratio = grounded_rationality / (mutual_groundedness + eps)
+					soft_gate = np.exp(-np.abs(np.log(ratio)))
+					
+					if anisotropy >= mutual_depth:
+						creative_gate = (grounded_rationality % mutual_groundedness) / mutual_groundedness
+						final_gate = max(soft_gate, creative_gate)
+					else:
+						final_gate = soft_gate		
+									
+					acceptance = final_gate >= 0.5
+					if acceptance:
+						refinement = cl.copy()
+						relations = mutual_groundedness
+					else:
+						refinement, relation = self.outer.uncertainty_handling_module(cl, type="weight")
+						relations = 1.0 + relation / mutual_groundedness
+						
+				else:
+					cache_unc = [key for key, (arr, idx, conf) in cache3.items() if key.startswith("w") and np.any(np.isclose(arr, sigmoid, atol=similarity))]
+					weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, sigmoid, atol=similarity))]
+					if weight and cache_unc:
+						for match in cache_unc:
+							unc, anisotropy, conf = cache3[match]
+						for we in weight:
+							w, idx = parameters[we]
+					else:
+						unc, conf = self.outer.uncertainty_handling_module(x)
+						anisotropy = mag
+												
+					anisotropy = anisotropy.copy()
+					conf = conf.copy()
+					w, query = self.outer._cache_relations(unc, x)
+					cl, query = self.outer._cache_relations(unc, x)
+					squared  = eps + (cl - w) ** 2
+					mse = np.sum(squared) / len(x)
+					rmse = np.sqrt(mse)
+					squared2  = eps + (cl - x) ** 2
+					mse2 = np.sum(squared2) / len(x)
+					grounded_rmse = np.sqrt(mse2)	
+					mutual_groundedness = 1.0 + rmse /  grounded_rmse**2
+					belief = conf / (1.0 + mutual_groundedness)
+					tolerance = anisotropy / (1.0 + conf)
+					mutual_depth = belief / (1.0 + tolerance)
+					grounded_rationality = (1.0 + grounded_rmse) / mutual_depth
+					ratio = grounded_rationality / (mutual_groundedness + eps)
+					soft_gate = np.exp(-np.abs(np.log(ratio)))										
+					if anisotropy >= mutual_depth:
+						creative_gate = (grounded_rationality % mutual_groundedness) / mutual_groundedness
+						final_gate = max(soft_gate, creative_gate)
+					else:
+						final_gate = soft_gate		
+									
+					acceptance = final_gate >= 0.5
+					if acceptance:
+							refinement = cl.copy()
+							relations = mutual_groundedness
+					else:
+						refinement, relation = self.outer.uncertainty_handling_module(cl, type="weight")
+						relations = 1.0 + relation / mutual_groundedness
+						
+				if np.isnan(refinement).any() or not np.isfinite(refinement).any():
+					refinement = np.ones_like(refinement)
+					
+				relations = np.nan_to_num(relations, nan=0.0, posinf=1e340, neginf=1e-340)
+				
+				return refinement, relations
+														
+																									
+			def regime_of_internal_world_model_reasoning(self, x):
+				constant = 1/137
+				cache1 = self.cache1
+				cache2 = self.cache2
+				cache3 = self.cache3
+				
+				if not self.outer.parameters:
+					self.outer.weight_embedding_module(x)
+							
+				parameters = self.outer.parameters
+				reasoning_params = self.outer.reasoning_params
+				similarity = self.sub_pattern_similarity(x)	
+				refined, mag = self.factual_concrete_reasoning(x)
+											
+				curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))		
+				sigmoid = 1.0 / (1.0 + curvature)
+										
+				weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, sigmoid, atol=similarity))]
+				bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, sigmoid, atol=similarity))]
+								
+				if self.linear:					
+					if isinstance(x[0], np.ndarray) or isinstance(x[0], list):
+						g = np.gradient(x[0])	
+					else:
+						g = np.gradient(x)			
+					v = [np.linalg.norm(gs) for gs in g]
+					sim_anisotropy = np.std(v) / np.mean(v) + 1e-6
+					
+					linear_wm = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, sim_anisotropy, atol=similarity))]
+					if linear_wm:
+						for match in linear_wm:
+							wm, idx = reasoning_params[match]
+						flattened = len(wm.flatten())
+						if flattened > len(x):
+							for idx, element in enumerate(wm):
+								sample = element.flatten()
+								n = np.gradient(sample)
+								g1 = [np.linalg.norm(ns) for ns in n]
+								anisotropy = np.std(g1) / np.mean(g1) + 1e-6
+								conf = 1.0 / (1.0 + anisotropy)			
+								cache1[f"wm{idx}"] = wm[idx], anisotropy, conf
+						else:
+							cache1["wm"] = wm, sim_anisotropy, sigmoid
+							
+						if bias:
+							for match2 in bias:
+								b, idx = parameters[match2]
+							sample1, relations = self.outer._cache_relations(b, x)
+						elif weight:
+							for match3 in weight:
+								w, idx = parameters[match3]
+							sample1, relations = self.outer._cache_relations(w, x)	
+													
+						linear_perception = [key for key, (arr, anis, conf) in cache1.items() if key.startswith("wm") and np.any(np.isclose(arr, relations, atol=similarity))]
+						
+						if linear_perception:
+							for tol in linear_perception:
+								val, anis, conf = cache1[tol]
+							sample2, relation = self.outer._cache_relations(val, x)
+							sample, relations = self.internal_tolerance_of_causality(sample2)
+						else:
+							sample, relations = self.outer.uncertainty_handling_module(sample1, type="weight")
+							
+				elif self.nonlinear:			
+					nonlinear_wm = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, sigmoid, atol=similarity))]	
+					
+					if nonlinear_wm:
+						for match in linear_wm:
+							wm, idx = reasoning_params[match]
+						flattened = len(wm.flatten())
+						if flattened > len(x):
+							for idx, element in enumerate(wm):
+								sample = element.flatten()
+								n = np.gradient(sample)
+								g1 = [np.linalg.norm(ns) for ns in n]
+								anisotropy = np.std(g1) / np.mean(g1) + 1e-6
+								conf = 1.0 / (1.0 + anisotropy)					
+								cache2[f"wm{idx}"] = wm[idx], anisotropy, conf
+						else:
+							cache2["wm"] = wm, sim_anisotropy, sigmoid
+														
+						if bias:
+							for match2 in bias:
+								b, idx = parameters[match2]
+							sample1, relations = self.outer._cache_relations(b, x)
+						elif weight:
+							for match3 in weight:
+								w, idx = parameters[match3]
+							sample1, relations = self.outer._cache_relations(w, x)	
+						else:
+							sample1, relations = self.outer.uncertainty_handling_module(x, type="weight")
+													
+						nonlinear_perception = [key for key, (arr, anis, conf) in cache1.items() if key.startswith("wm") and np.any(np.isclose(arr, relations, atol=similarity))]
+						if nonlinear_perception:
+							for tol in nonlinear_perception:
+								val, anis, conf = cache1[tol]
+							sample2, relation = self.outer._cache_relations(val, x)
+							sample, relations = self.internal_tolerance_of_causality(sample2)							
+						else:
+							sample, relations = self.outer.uncertainty_handling_module(sample1, type="bias")
+					
+				else:									
+					self.uncertainty_count += 1
+					idx = self.uncertainty_count
+					belief = 1.0 / (1.0 - mag)
+					cache3[f"w{idx}"] = x, sigmoid, belief
+					sample, relations = self.internal_tolerance_of_causality(x)
+											
+				if np.isnan(sample).any() or not np.isfinite(sample).any():
+					sample = np.ones_like(sample)
+
+				return sample, mag
+				
+			def execute_planned_reasoning(self, x):
+				eps = 1e-5
+				constant = 1/137
+				
+				coherences1 = self.coherence1
+				coherences2 = self.coherence2
+				coherences3 = self.coherence3
+				
+				if not self.outer.parameters:
+					self.outer.weight_embedding_module(x)
+							
+				parameters = self.outer.parameters
+				reasoning_params = self.outer.reasoning_params
+				similarity = self.sub_pattern_similarity(x)	
+				coherences, mag = self.factual_concrete_reasoning(x)
+											
+				curvature = constant + np.mean(np.abs(np.diff(np.diff(coherences))))		
+				sigmoid = 1.0 / (1.0 - curvature)
+										
+				weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, sigmoid, atol=similarity))]
+				bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, sigmoid, atol=similarity))]
+																
+				if self.linear:
+					linear_wm = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, softed, atol=similarity))]
+
+					if linear_wm:
+						for match in linear_wm:
+							wm, idx = reasoning_params[match]
+						wm, relation = self.outer._cache_relations(wm, x)
+						if weight:
+							for match in weight:
+								w, idx = parameters[match]
+							refined, relation = self.outer._cache_relations(w, x)
+						elif bias:
+							for match2 in weight:
+								b, idx = parameters[match2]
+							refined, relation = self.outer._cache_relations(b, x)
+						else:
+							uncertainty, relation = self.outer.uncertainty_handling_module(x, type="bias")
+							refined = uncertainty.copy()
+							
+						if coherences1 and len(coherences1) % 2 == 0:
+							arrayed = np.array([coherences1])
+							n = np.gradient(arrayed)
+							g1 = [np.linalg.norm(ns) for ns in n]
+							anisotropy = np.std(g1) / np.mean(g1) + 1e-6											
+							
+							squared  = eps + (wm - refined) ** 2
+							mse = np.sum(squared) / len(x)
+							rmse = np.sqrt(mse)
+							squared2  = eps + (wm - x) ** 2
+							mse2 = np.sum(squared2) / len(x)
+							grounded_rmse = np.sqrt(mse2)	
+							mutual_groundedness = 1.0 + rmse /  grounded_rmse**2
+							
+							belief = mag / (1.0 + mutual_groundedness)
+							tolerance = anisotropy / (1.0 + mag)
+							mutual_depth = belief / (1.0 + tolerance)
+							grounded_rationality = (1.0 + grounded_rmse) / mutual_depth		
+							
+							inertia = 1.0 + max(mutual_depth,grounded_rationality) / mutual_groundedness**2
+			
+							
+						else:
+							squared  = eps + (wm - refined) ** 2
+							mse = np.sum(squared) / len(x)
+							rmse = np.sqrt(mse)
+							squared2  = eps + (wm - x) ** 2
+							grounded_rmse = np.sqrt(mse2)	
+							mutual_groundedness = 1.0 + rmse /  grounded_rmse**2
+							
+							belief = softed / (1.0 + mutual_groundedness)
+							tolerance = anisotropy / (1.0 + softed)
+							mutual_depth = belief / (1.0 + tolerance)
+							grounded_rationality = (1.0 + grounded_rmse) / mutual_depth
+																
+							inertia = 1.0 + min(mutual_depth, grounded_rationality) / mutual_groundedness**2
+							
+					else:
+						refined, relation = self.outer.uncertainty_handling_module(linear_wm, type="weight")
+						inertia = 1.0 + min(sigmoid, relation) / softed**2
+				elif self.nonlinear or self.uncertainty:											
+					nonlinear_wm = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, sigmoid, atol=similarity))]
+
+					if nonlinear_wm:
+						for match in nonlinear_wm:
+							wm, idx = reasoning_params[match]
+						wm, relation = self.outer._cache_relations(wm, x)
+						if weight:
+							for match in weight:
+								w, idx = parameters[match]
+							refined, relation = self.outer._cache_relations(w, x)
+						elif bias:
+							for match2 in weight:
+								b, idx = parameters[match2]
+							refined, relation = self.outer._cache_relations(b, x)
+						else:
+							uncertainty, relation = self.outer.uncertainty_handling_module(x, type="bias")
+							refined = uncertainty.copy()
+							
+						if coherences2 and len(coherences2) % 2 == 0:
+							arrayed = np.array([coherences2])
+							n = np.gradient(arrayed)
+							g1 = [np.linalg.norm(ns) for ns in n]
+							anisotropy = np.std(g1) / np.mean(g1) + 1e-6											
+							
+							squared  = eps + (wm - refined) ** 2
+							mse = np.sum(squared) / len(x)
+							rmse = np.sqrt(mse)
+							squared2  = eps + (wm - x) ** 2
+							mse2 = np.sum(squared2) / len(x)
+							grounded_rmse = np.sqrt(mse2)	
+							mutual_groundedness = 1.0 + rmse /  grounded_rmse**2
+							
+							belief = mag / (1.0 + mutual_groundedness)
+							tolerance = anisotropy / (1.0 + mag)
+							mutual_depth = belief / (1.0 + tolerance)
+							grounded_rationality = (1.0 + grounded_rmse) / mutual_depth		
+							
+							inertia = 1.0 + max(mutual_depth,grounded_rationality) / mutual_groundedness**2
+							
+						elif coherences3 and len(coherences3) % 2 == 0:
+							arrayed = np.array([coherences3])
+							n = np.gradient(arrayed)
+							g1 = [np.linalg.norm(ns) for ns in n]
+							anisotropy = np.std(g1) / np.mean(g1) + 1e-6											
+							
+							squared  = eps + (wm - refined) ** 2
+							mse = np.sum(squared) / len(x)
+							rmse = np.sqrt(mse)
+							squared2  = eps + (wm - x) ** 2
+							mse2 = np.sum(squared2) / len(x)
+							grounded_rmse = np.sqrt(mse2)	
+							mutual_groundedness = 1.0 + rmse /  grounded_rmse**2
+							
+							belief = mag / (1.0 + mutual_groundedness)
+							tolerance = anisotropy / (1.0 + mag)
+							mutual_depth = belief / (1.0 + tolerance)
+							grounded_rationality = (1.0 + grounded_rmse) / mutual_depth		
+							
+							inertia = 1.0 + max(mutual_depth,grounded_rationality) / mutual_groundedness**2		
+							
+						else:
+																			
+							squared  = eps + (wm - refined) ** 2
+							mse = np.sum(squared) / len(x)
+							rmse = np.sqrt(mse)
+							squared2  = eps + (wm - x) ** 2
+							mse2 = np.sum(squared2) / len(x)			
+							grounded_rmse = np.sqrt(mse2)	
+							mutual_groundedness = 1.0 + rmse /  grounded_rmse**2
+							
+							belief = mag / (1.0 + mutual_groundedness)
+							cautious_tolerance = grounded_rmse/ (1.0 + mag)
+							mutual_depth = belief / (1.0 + cautious_tolerance)
+							grounded_rationality = (1.0 + grounded_rmse) / mutual_depth
+																
+							inertia = 1.0 + min(mutual_depth, grounded_rationality) / mutual_groundedness**2
+							
+					else:
+						refined, relation = self.outer.uncertainty_handling_module(linear_wm, x, type="weight")
+						inertia = 1.0 + min(sigmoid, relation) / mag**2
+				else:
+					refined, relation = self.outer.uncertainty_handling_module(coherences, type=None)
+					inertia = 1.0 + min(sigmoid, relation) / mag**2
+					
+				mutual_consistency = 1.0 + relation / mag**2				
+				refinement = np.dot(refined, mutual_consistency)
+				
+				if np.isnan(refinement).any() or not np.isfinite(refinement).any():
+					refinement = np.ones_like(x)
+				return refinement				
+
+												
+			def coherent_long_term_planning(self, x):
+				eps = 1e-5
+				constant = 1/137
+				cache1 = self.cache1
+				cache2 = self.cache2
+				cache3 = self.cache3
+				
+				if not self.outer.parameters:
+					self.outer.weight_embedding_module(x)
+							
+				parameters = self.outer.parameters
+				reasoning_params = self.outer.reasoning_params
+				similarity = self.sub_pattern_similarity(x)	
+				refined, mag = self.factual_concrete_reasoning(x)
+				term, relation = self.regime_of_internal_world_model_reasoning(refined)												
+				curvature = constant + np.mean(np.abs(np.diff(np.diff(term))))		
+				sigmoid = 1.0 / (1.0 - curvature)
+										
+				weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, sigmoid, atol=similarity))]
+				bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, sigmoid, atol=similarity))]	
+				if self.linear:
+					linear_wm = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, relation, atol=similarity))]				
+					if linear_wm:
+						for match in linear_wm:
+							wm, idx = reasoning_params[match]
+							
+						refinement, relation = self.outer._cache_relations(wm, x)
+						caches = len(cache1)
+						if caches >= 3:
+							for key, (idx, value) in enumerate(cache1.items):
+								anisotropy = value[1].copy()					
+								conf = value[2].copy()
+									
+								squared  = eps + (value[0] - refinement) ** 2
+								mse = np.sum(squared) / len(x)
+								rmse = np.sqrt(mse)					
+								squared2  = eps + (value[0] - x) ** 2
+								mse2 = np.sum(squared2) / len(x)
+								grounded_rmse = np.sqrt(mse2)
+								mutual_groundedness = 1.0 + rmse /  grounded_rmse**2
+								
+								belief = conf / (1.0 + mutual_groundedness)
+								tolerance = anisotropy / (1.0 + conf)
+								mutual_depth = belief / (1.0 + tolerance)
+								grounded_rationality = (1.0 + grounded_rmse) / mutual_depth
+								
+								ratio = grounded_rationality / (mutual_groundedness + eps)
+								soft_coherences = np.exp(-np.abs(np.log(ratio)))
+								
+								self.coherence1.append(soft_coherences)
+								
+						else:
+							uncertainty, soft_coherences = self.outer.uncertainty_handling_module(refinement, type="weight")
+							refinement = uncertainty.copy()
+
+
+				elif self.nonlinear:											
+					nonlinear_wm = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, sigmoid, atol=similarity))]				
+					if nonlinear_wm:
+						for match in nonlinear_wm:
+							wm, idx = reasoning_params[match]
+							
+						refinement, relation = self.outer._cache_relations(wm, x)						
+						caches = len(cache2)
+						if caches >= 3:
+							for key, (idx, value) in enumerate(cache2.items):
+								anisotropy = value[1].copy()					
+								conf = value[2].copy()
+									
+								squared  = eps + (value[0] - w) ** 2
+								mse = np.sum(squared) / len(x)
+								rmse = np.sqrt(mse)					
+								squared2  = eps + (value[0] - x) ** 2
+								mse2 = np.sum(squared2) / len(x)
+								grounded_rmse = np.sqrt(mse2)
+								mutual_groundedness = 1.0 + rmse /  grounded_rmse**2
+								
+								belief = conf / (1.0 + mutual_groundedness)
+								tolerance = anisotropy / (1.0 + conf)
+								mutual_depth = belief / (1.0 + tolerance)
+								grounded_rationality = (1.0 + grounded_rmse) / mutual_depth
+								
+								ratio = grounded_rationality / (mutual_groundedness + eps)
+								soft_coherences = np.exp(-np.abs(np.log(ratio)))
+								
+								self.coherence2.append(soft_coherences)
+						else:
+							uncertainty, soft_coherences = self.outer.uncertainty_handling_module(refinement, type="weight")
+							refinement = uncertainty.copy()
+					
+				elif self.uncertainty:
+					unc_w = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, sigmoid, atol=similarity))]				
+					if unc_w:
+						for match in unc_w:
+							w, idx = parameters[match]					
+							
+						refinement, relation = self.outer._cache_relations(w, x)						
+						caches = len(cache3)
+						if caches >= 3:
+							for key, (idx, value) in enumerate(cache3.items()):
+								anisotropy = value[1].copy()					
+								conf = value[2].copy()
+									
+								squared  = eps + (value[0] - w) ** 2
+								mse = np.sum(squared) / len(x)
+								rmse = np.sqrt(mse)					
+								squared2  = eps + (value[0] - x) ** 2
+								mse2 = np.sum(squared2) / len(x)
+								grounded_rmse = np.sqrt(mse2)
+								mutual_groundedness = 1.0 + rmse /  grounded_rmse**2
+								
+								belief = conf / (1.0 + mutual_groundedness)
+								tolerance = anisotropy / (1.0 + conf)
+								mutual_depth = belief / (1.0 + tolerance)
+								grounded_rationality = (1.0 + grounded_rmse) / mutual_depth
+								
+								ratio = grounded_rationality / (mutual_groundedness + eps)
+								soft_coherences = np.exp(-np.abs(np.log(ratio)))
+								
+								self.coherence3.append(soft_coherences)
+						else:
+							uncertainty, soft_coherences = self.outer.uncertainty_handling_module(refinement, type="weight")
+							refinement = uncertainty.copy()
+																									
+				else:
+					uncertainty, soft_coherences = self.outer.uncertainty_handling_module(x, type=None)
+					refinement = uncertainty.copy()
+				
+				strategic_imp = self.execute_planned_reasoning(refinement)
+						
+				return strategic_imp					
+		
+		class SimulativeSequence:
+			def __init__(self, outer):
+				self.outer = outer
+				self.x = x
+				self.main = PredictiveSimilarity(self.outer)
+				
+
+				
+			def simulative_search(self):
+				x = self.x
+				
+				if not self.outer.parameters:
+					self.outer.weight_embedding_module(x)		
+				parameters = self.outer.parameters
+				reasoning_params = self.outer.reasoning_params
+				similarity = self.main.sub_pattern_similarity(x)
+								
+				constant = 1/137
+				linear_slope_consistency = np.std(np.diff(x))				
+				curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+				slope = constant + np.mean(np.abs(np.diff(x)))
+				sensitive_sigmoid = 1.0 / (1.0 - curvature)	
+				if isinstance(x[0], np.ndarray) or isinstance(x[0], list):
+					g = np.gradient(x[0])
+				else:
+					g = np.gradient(x)
+				v = [np.linalg.norm(gs) for gs in g]
+				sim_anisotropy = np.std(v) / np.mean(v) + 1e-6					
+				geodesic_space = curvature / (1.0 - sensitive_sigmoid)
+				geodesic_manifold = sensitive_sigmoid / (1.0 + geodesic_space)
+				geodesic_manifold_conv_probs = 1.0 + geodesic_space / (1.0 - sensitive_sigmoid)
+				geodesic_manifold_div_probs = geodesic_manifold_conv_probs / (1.0 - geodesic_space)
+				geodesic_projection = 1.0 + geodesic_manifold_div_probs / (1.0 - geodesic_manifold_conv_probs)
+				equilibrium_point = 1.0 + geodesic_projection / (1.0 - sensitive_sigmoid)			
+				logistic_growth = 1.0 + equilibrium_point / (1.0 - geodesic_manifold_div_probs)
+				
+				matching_bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, logistic_growth, atol=similarity))]	
+				matching_weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, logistic_growth, atol=similarity))]
+				matching_reasoning_logit = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, sim_anisotropy, atol=similarity))]
+				
+				if linear_slope_consistency % curvature >= 0 and linear_slope_consistency % curvature <= similarity:
+					refined, mag = self.main.regime_of_internal_world_model_reasoning(x)
+					query = mag
+				else:
+					if matching_bias:
+						for match in matching_bias:
+							bias, causal_sigmoid = parameters[match]	
+						if len(bias) > len(x):
+							bias, causal_sigmoid = self.outer._cache_relations(bias, x)
+						query = causal_sigmoid
+						refined = bias
+					
+					elif matching_weight:
+						for match in matching_weight:
+							w, causal_sigmoid = parameters[match]
+						if len(w) > len(x):
+							w, causal_sigmoid = self.outer._cache_relations(w, x)
+						query = causal_sigmoid	
+						refined = w.copy()
+					elif matching_reasoning_logit:
+						for match in matching_reasoning_logit:
+							wm, causal_sigmoid = reasoning_params[match]
+						if len(wm) > len(x):
+							wm, causal_sigmoid = self.outer._cache_relations(wm, x)
+						query = causal_sigmoid 
+						refined = wm.copy()
+					else:
+						uncertainty_handle, certainty = self.outer.uncertainty_handling_module(x, type=None)
+						refined = uncertainty_handle
+						query = certainty
+						self.outer.parameters["w_replace"] = refined, query
+						self.outer.reasoning_params["wm_replace"] = refined, query
+						
+				coherent_long_term_horizon = self.main.coherent_long_term_planning(refined)							
+				A_projection = query / (1.0 - logistic_growth)
+				B_projection = equilibrium_point / (1.0 - A_projection)
+				
+				V_projection = 1.0 + geodesic_projection / ( B_projection - 1.0)
+				V_encoder = np.dot(coherent_long_term_horizon, V_projection)
+				V_encoder = np.nan_to_num(V_encoder, nan=0.0, posinf=1e340, neginf=1e-340)
+				
+				return V_encoder, similarity							
+
+
+				
+		simulative_module = SimulativeSequence(self)
+		simulative_search = simulative_module.simulative_search()
+		return simulative_search
+		
+	def implicit_noise(self, x):
+		constant = 1/137
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))			
+		slope = constant + np.mean(np.abs(np.diff(x)))
+		sensitive_sigmoid = 1.0 / (1.0 - curvature)			
+		geodesic_space = curvature / (1.0 - sensitive_sigmoid)						
+		geodesic_manifold = sensitive_sigmoid / (1.0 + geodesic_space)
+		entropy_spike = geodesic_manifold / (1.0 - geodesic_space)
+		noise = np.random.uniform(0, entropy_spike, size=x.shape)
+		return noise		
+			
+	def _multi_modal_vertex(self, x):	
+		if not self.parameters:
+			self.weight_embedding_module(x)
+		parameters = self.parameters
+		constant = 1/137
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+			
+		sensitive_sigmoid = 1.0 / (1.0 - curvature)
+			
+		internal_pattern = 1.0 + sensitive_sigmoid / (1.0 + curvature)
+
+		#pattern recognition handling
+		matching_weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, internal_pattern, atol=1e-3))]
+		matching_bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, internal_pattern, atol=1e-3))]	
+				
+		if matching_weight:			
+			for match in matching_weight:
+				weight, query = parameters[match]
+						
+			refined = weight.copy()							
+		elif matching_bias:
+			for match in matching_bias:
+				bias, query2 = parameters[match]
+			refined = bias.copy()
+		else:
+			noise = self.implicit_noise(x)
+			curvature = constant + np.mean(np.abs(np.diff(np.diff(noise))))
+			sigmoid_relations = 1.0 / (1.0 - curvature)
+						
+			matching_weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, sigmoid_relations, atol=1e-3))]
+			
+			if matching_weight:
+				for match in matching_weight:
+					w, idx = parameters[match]
+									
+				if np.isfinite(w).any():
+					refined, score = self._cache_relations(w, noise)
+			else:
+				refined = x.copy()	
+						
+		if np.isfinite(refined).any():
+			if isinstance(refined, np.ndarray):
+				if refined.ndim >= 2:
+					refined, sigmoid= self._cache_relations(refined, x)
+				else:
+					refined, sigmoid = self._cache_relations(refined, x)
+					x = refined.copy()
+				
+		else:
+			x = x.copy()
+			
+		self.parameters["w_replace"] = x, sensitive_sigmoid
+		self.parameters["b_replace"] = x, sensitive_sigmoid																							
+		embedded, similarity = self.small_predictive_embedding_module(x)	
+
+		geodesic_space = similarity / (1.0 - sensitive_sigmoid)					
+		geodesic_manifold = sensitive_sigmoid / (1.0 + geodesic_space)
+		geodesic_manifold_conv_probs = 1.0 + geodesic_space / (1.0 - sensitive_sigmoid)
+		geodesic_manifold_div_probs = geodesic_manifold_conv_probs / (1.0 - geodesic_space)
+		geodesic_projection = 1.0 + geodesic_manifold_div_probs / (1.0 - geodesic_manifold_conv_probs)
+		equilibrium_point = 1.0 + similarity / (1.0 - geodesic_projection)
+			
+		trA1 = geodesic_projection / (1.0 - geodesic_manifold)
+		trA2 = (1/2 + equilibrium_point) / (1.0 + trA1**2)
+		trA3 = (1/6 + geodesic_projection) / (trA2**2 - 1.0)
+			
+		refinement = np.dot(embedded, trA3)				
+												
+		if np.isnan(refinement).any() or not np.isfinite(refinement).any():
+			refinement = np.ones_like(x)
+
+		return refinement			
+
+	def uncertainty_handling_module(self, x, type=None):
+		modulo_distribution = None
+		eps = 1e-3
+			
+		if not self.parameters:
+			self.weight_embedding_module(x)	
+			
+		parameters = self.parameters
+		reasoning_params = self.reasoning_params
+		
+		x = x.copy()
+		constant = 1/137
+			
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		sensitive_sigmoid = 1.0 / (1.0 - curvature)
+								
+		generative_space = curvature / (1.0 + sensitive_sigmoid)
+		generative_projection = 1.0 + sensitive_sigmoid / (1.0 - generative_space)
+		equilibrium_certainty = 1.0 + sensitive_sigmoid / (1.0 - generative_projection)
+		equilibrium_uncertainty = 1.0 / (1.0 - equilibrium_certainty)
+			
+		matching_relations = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, equilibrium_certainty, atol=1e-3))]
+				
+		if type == 'weight':
+			match_weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, equilibrium_certainty, atol=1e-3))]	
+			if match_weight:
+				for match in match_weight:
+					w, query = parameters[match]
+						
+				refinement, relations= self._cache_relations(w, x)																									
+				modulo_distribution = relations % equilibrium_uncertainty														
+				self.parameters["w_replace"] = refinement, equilibrium_uncertainty	
+			else:
+				refinement = x
+				modulo_distribution = equilibrium_certainty % equilibrium_uncertainty
+				self.parameters["w_replace"] = refinement, equilibrium_certainty							
+																							
+		elif type == 'bias':
+			match_bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, equilibrium_certainty, atol=1e-3))]	
+			if match_bias:
+				for match in match_bias:
+					b, query = parameters[match]
+			
+				refinement, relations = self._cache_relations(b, x)
+				modulo_distribution = relations % equilibrium_uncertainty									
+				self.parameters["b_replace"] = refinement, equilibrium_uncertainty		
+			else:
+				refinement = x
+				modulo_distribution = equilibrium_certainty % equilibrium_uncertainty
+				self.parameters["w_replace"] = refinement, equilibrium_certainty																			
+		elif matching_relations:
+			 for match in matching_relations:
+			    wm, query = reasoning_params[match]
+			 refinement, relations = self._cache_relations(wm, x)
+			 modulo_distribution = relations % equilibrium_uncertainty
+			 self.parameters["w_replace"] = refinement, modulo_distribution
+		    	
+		else:				
+			refinement = x
+			modulo_distribution = equilibrium_certainty % equilibrium_uncertainty
+			self.parameters["w_replace"] = refinement, equilibrium_certainty		
+				
+		if modulo_distribution is None:
+			modulo_distribution = eps + equilibrium_certainty % equilibrium_uncertainty				
+			
+		modulo_gen_conf = modulo_distribution / (1.0 - generative_projection)
+		modulo_certainty_score = 1.0 + modulo_gen_conf / (1.0 + equilibrium_certainty)
+			
+
+		if np.isnan(refinement).any() or not np.isfinite(refinement).any():
+			refinement = np.ones_like(x)
+			
+		return refinement, modulo_certainty_score
+						
+		
+	def network_feed_forward_activations(self, x):	
+		n_samples = len(x)
+		eps = 1e-5	
+		if not self.parameters:
+			self.weight_embedding_module(x)	
+									
+		parameters = self.parameters				
+		constant = 1/137
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		sensitive_sigmoid = 1.0 / (1.0 - curvature)
+			
+		logits_growth_traj = 1.0 / (1.0 + sensitive_sigmoid)
+		degenerative_traj = 1e-6 + (1.0 - logits_growth_traj / 1.0 + sensitive_sigmoid)	
+		degenerative_logit = 1e-6 + (1.0 - degenerative_traj / 1.0 - sensitive_sigmoid)
+			
+		degenerative_weight  = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, degenerative_logit, atol=1e-3))]
+		degenerative_bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, degenerative_logit, atol=1e-3))]	
+			
+		if degenerative_weight:
+			for match in degenerative_weight:
+				weight, query2 = parameters[match]
+			weight, sigmoid_relations = self._cache_relations(weight, x)
+			
+			weight = self.leaky_relu(weight)
+			refined_weight, score = self.uncertainty_handling_module(weight, type='weight')
+			self.parameters[match] = refined_weight, query2
+			degenerative_score = eps + (query2 - degenerative_traj)
+			squared_error = eps + (refined_weight - weight) ** 2
+			mse = np.sum(squared_error) / n_samples
+			rmse = np.sqrt(mse)
+						
+		elif degenerative_bias:
+			for match in degenerative_bias:
+				bias, query3 = parameters[match]
+			bias, sigmoid = self._cache_relations(bias, x)			
+			if np.isfinite(bias).any():
+				bias = self.leaky_relu(bias)
+				refined_bias, score = self.uncertainty_handling_module(bias, type='bias')				
+				self.parameters[match] = bias, query3					
+				degenerative_score = eps + (query3 - degenerative_traj)
+				squared_error = eps + (refined_bias - bias) ** 2
+				mse = np.sum(squared_error) / n_samples
+				rmse = np.sqrt(mse)				
+		else:
+			mse = 1e-2
+					
+		mse = np.nan_to_num(mse, nan=0.0, posinf=1e340, neginf=1e-340)																			
+		return mse
+			
+	def _cache_relations(self, batch, x):
+		parameters = self.parameters
+		
+		cache = {}		
+		constant = 1/137
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		sigmoid = 1.0 / (1.0 - curvature)
+		if len(batch) > len(x) and isinstance(batch[0], np.ndarray) or isinstance(batch[0], list):
+			for key in range(len(batch)):
+				curve = constant + np.mean(np.abs(np.diff(np.diff(batch[key]))))
+				cache[f"item{key}"] = batch[key], sigmoid
+		else:
+			curve = constant + np.mean(np.abs(np.diff(np.diff(batch))))							
+			cache[f"item"] = batch, sigmoid
+				
+		sigmoid_relations = 1.0 / (1.0 - curve)
+		matching_weight = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, sigmoid_relations, atol=1e-3))]
+		matching_bias = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, sigmoid_relations, atol=1e-3))]	
+				
+		if matching_weight:		
+			for match in matching_weight:
+				weight, idx = parameters[match]
+		
+			self.parameters["w_replace"] = weight, sigmoid_relations
+			refinement = weight	
+				
+		elif matching_bias:
+			for match in matching_bias:
+				bias, idx = parameters[match]
+			refinement = self.leaky_relu(bias)				
+			self.parameters["b_replace"] = x, sigmoid_relations			
+		else:
+			refinement = x
+			self.parameters["w_replace"] = x, sigmoid_relations
+				
+		cache.clear()					
+		refinement = np.nan_to_num(refinement, nan=0.0, posinf=1e340, neginf=1e-340)
+		
+		return refinement, sigmoid_relations					
+
+		
+	def internal_causal_modelling(self, x):
+		
+		parameters = self.parameters
+		reasoning_params = self.reasoning_params
+			
+		x = x.copy()
+		constant = 1/137
+		eps = 1e-3
+			
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		sens_sigmoid = 1.0 / (1.0 - curvature)
+			
+		vertex = self._multi_modal_vertex(x)
+		rmse = self.network_feed_forward_activations(vertex)
+			
+		geodesic_space = curvature / (1.0 - sens_sigmoid)
+		geodesic_manifold = sens_sigmoid / (1.0 + geodesic_space)
+		geodesic_projection = 1.0 + geodesic_manifold / (1.0 - geodesic_space)			
+		causal_certainty = 100 / (1.0 + rmse)
+		equilibrium_consensus = 1.0 + causal_certainty / (1.0 + geodesic_projection)
+			
+		trA1 = geodesic_projection / (1.0 - geodesic_manifold)
+		trA2 = (1/2 + equilibrium_consensus) / (1.0 + trA1**2)
+		trA3 = (1/6 + causal_certainty) / (trA2**2 - 1.0)					
+		reasoning_causalities = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, trA3, atol=1e-3))]			
+		bias_causalities = [key for key, (b, query) in parameters.items() if key.startswith("b") and np.any(np.isclose(b, trA3, atol=1e-3))]			
+		
+		if reasoning_causalities:
+			
+			for causalities in reasoning_causalities:
+				wm, energy = reasoning_params[causalities]
+			refined, causal_sigmoid = self._cache_relations(wm, x)			
+			ratio_relations = causal_sigmoid % sens_sigmoid
+			memory_handle  = [tag for tag, (w, query) in parameters.items() if tag.startswith("w") and np.any(np.isclose(w, causal_sigmoid, atol=1e-3))]
+			
+			if memory_handle:
+						
+				for mem in memory_handle:
+					
+					tag, query = parameters[mem]
+				if np.isfinite(tag).any() and query:
+					causal_rmse = self.network_feed_forward_activations(tag)							
+					if causal_rmse >= rmse:
+						refinement = vertex
+					else:
+						refinement = refined
+						
+			else:
+								
+				uncertainty_handle, score = self.uncertainty_handling_module(refined, type='weight')
+				refinement = uncertainty_handle
+				self.parameters["w_replace"] = refinement, score
+				
+		elif bias_causalities:
+			
+			for bias in bias_causalities:
+				b, query = parameters[bias]
+			if np.isfinite(b).any():
+				b, causal_sigmoid = self._cache_relations(b, x)
+				causal_rmse = self.network_feed_forward_activations(b)
+				if causal_rmse >= rmse:
+					refinement = vertex
+				else:
+					refinement = b	
+					return refinement 			
+											
+		else:						
+			uncertainty_handle, score = self.uncertainty_handling_module(vertex, type='weight')
+			refinement = uncertainty_handle
+			self.parameters["w_replace"] = refinement, trA3
+				
+		if np.isnan(refinement).any() or not np.isfinite(refinement).any():
+			refinement = np.ones_like(x)
+		return refinement 								
+
+
+
+	def hierarchical_sub_agent_module(self, x):
+		x = x.copy()			
+		class Node:
+				def __init__(self, outer):
+					self.outer = outer
+					self.global_satisfiability = 0.1
+					self.x = x.copy()
+					
+				def dynamic_lyapunov_confidence_evaluator(self, x):
+					x = x.copy()
+					constant = 1/137
+					curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+					slope = constant + np.mean(np.abs(np.diff(x)))
+					sensitive_sigmoid = 1.0 / (1.0 - curvature)
+					
+					geodesic_space = 1.0 + sensitive_sigmoid / (1.0 - slope) 								
+					geodesic_manifold = geodesic_space / (1.0 + sensitive_sigmoid)
+					geodesic_conv = (1.0 + geodesic_space / geodesic_manifold ) - 1.0
+					geodesic_div = geodesic_manifold / (1.0 - geodesic_conv)
+					geodesic_projection = geodesic_conv / (1.0 - geodesic_div)
+					equilibrium_point = 1.0 + geodesic_projection / (1.0 - geodesic_manifold)
+					
+					trA1 = geodesic_projection / (1.0 - geodesic_manifold)
+					trA2 = (1/2 + equilibrium_point) / (1.0 + trA1**2)
+				
+					if np.isnan(trA2) or not np.isfinite(trA2):
+						trA2 = 1.0
+					return trA2
+																							
+				def _process(self):
+					x = self.x.copy()
+					lyapunov_measures = self.dynamic_lyapunov_confidence_evaluator(x)
+					if lyapunov_measures >= self.global_satisfiability:
+						self.global_satisfiability = lyapunov_measures
+						return True
+					else:
+						return False	
+									
+		class InternalAutomation(Node):
+				def __init__(self, outer, children):
+					super().__init__(outer)
+					self.main = Node(self.outer)
+					
+					self.local_satisfiability = 0.1
+					self.layers = self.outer.layers
+					self.parameters = self.outer.parameters
+					self.reasoning_params = self.outer.reasoning_params
+					self.x = x.copy()
+					self.children = children
+					
+				def small_feed_forward(self, x):
+					reasoning_params = self.reasoning_params
+					
+					constant = 1/137
+					uniform = np.ones_like(x)
+					
+					curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+					slope = constant + np.mean(np.abs(np.diff(x)))
+					sigmoid = 1.0 / (1.0 - curvature)
+					
+					geodesic_space = 1.0 + sigmoid / (1.0 - slope)
+					geodesic_manifold = curvature / (1.0 + geodesic_space)
+					geodesic_conv = sigmoid / (1.0 + geodesic_manifold)
+					geodesic_div = geodesic_conv / (1.0 - geodesic_space)
+					geodesic_projection = 1.0 +geodesic_conv / (1.0 - geodesic_div)
+					geodesic_equilibrium = 1.0 + geodesic_projection / (geodesic_manifold - 1.0)
+					
+					trA1 = geodesic_projection / (1.0 - geodesic_div)
+					trA2 = (1/2) + geodesic_equilibrium / (1.0 + trA1**2)
+					trA3 = (1/6) + geodesic_space / (trA2**2 - 1.0)					
+					matches_hub = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, trA3, atol=1e-3))]
+					if matches_hub:
+						for match in matches_hub:
+							wm, idx = reasoning_params[match]
+						
+						wm, idx = self.outer._cache_relations(wm, x)
+						rmse = self.outer.network_feed_forward_activations(wm)
+						refinement = wm
+					else:
+						uncertainty_handle, score = self.outer.uncertainty_handling_module(x, type='weight')
+						self.outer.reasoning_params["wm_replace"] = uncertainty_handle, score
+						rmse = self.outer.network_feed_forward_activations(uncertainty_handle)
+						refinement = uncertainty_handle
+						
+			
+					return refinement, rmse
+				
+				def process(self):
+					x = self.x.copy()
+					main = self.main
+					children = self.children
+					
+					output, error = self.small_feed_forward(x)
+					evaluator_logit = self.dynamic_lyapunov_confidence_evaluator(output)
+					error_ratio = 1.0 + evaluator_logit / error
+					if error_ratio % self.local_satisfiability  == 0:
+						self.local_satisfiability = evaluator_logit
+						for child in children:
+							return child.process()
+					else:
+						self.local_satisfiability -= 0.01
+						for child in children:
+					
+												
+							return child.process()
+						
+					
+		class OutputAutomaton(Node):
+				def __init__(self, outer):
+					super().__init__(outer)
+					self.local_satisfiability = 0.1
+					self.x = x
+					self.main = Node(self.outer)
+
+				def logistic_softmax(self, x):
+					x = self.x.copy()	
+					constant = 1/137	
+					eps = 1e-4
+					
+					noise = self.outer.implicit_noise(x)
+					stability = self.main.dynamic_lyapunov_confidence_evaluator(noise)
+					update_vertex = self.outer._multi_modal_vertex(noise)
+					rmse = self.outer.network_feed_forward_activations(update_vertex)
+					
+					curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+					slope = constant + np.mean(np.abs(np.diff(x)))
+					sigmoid = 1.0 / (1.0 - curvature)
+					
+					geodesic_space = sigmoid / (1.0 + curvature)
+					stable_manifold = 1.0 + sigmoid / (1.0 + geodesic_space)
+					geodesic_conv = sigmoid / (1.0 + stable_manifold)	
+					geodesic_div = geodesic_conv / (1.0 - geodesic_space)
+					geodesic_projection = 1.0 + geodesic_conv / (1.0 - geodesic_div)
+					geodesic_equilibrium = 1.0 + geodesic_projection / geodesic_space
+					
+					fixated = 1.0 + rmse / eps + geodesic_equilibrium
+					truncated = geodesic_projection / (1.0 - fixated)
+					growth = truncated / (1.0 + geodesic_equilibrium)
+					
+					trA1 = geodesic_projection / (1.0 - slope)
+					trA2 = (1/2 + geodesic_equilibrium) / (1.0 + trA1**2)
+					trA3 = (1/6 + growth) / (trA2**2 - 1.0)
+					
+					refined = np.dot(update_vertex, trA3)
+					
+					if np.isnan(refined).any() or not np.isfinite(refined).any():
+						refined = np.ones_like(refined)
+							
+					return refined
+						
+				def reasoning_trainer_automation(self):
+					x = self.x
+					constant = 1/137
+					if not self.outer.parameters:
+						self.outer.weight_embedding_module(x)
+						
+					embeddings, similarity = self.outer.small_predictive_embedding_module(x)
+						
+					parameters = self.outer.parameters
+					reasoning_params = self.outer.reasoning_params
+					
+					curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+					sigmoid = 1.0 / (1.0 - curvature)
+					geodesic_manifold = 1.0 + sigmoid / curvature
+					
+					weights_similar_manifold = [key for key, (arr, idx) in parameters.items() if key.startswith("w") and np.any(np.isclose(arr, geodesic_manifold, atol=similarity))]
+					bias_similar_manifold = [key for key, (arr, idx) in parameters.items() if key.startswith("b") and np.any(np.isclose(arr, geodesic_manifold, atol=similarity))]
+					similar_reasoning = [key for key, (arr, idx) in reasoning_params.items() if key.startswith("wm") and np.any(np.isclose(arr, geodesic_manifold, atol=similarity))]
+					
+					if weights_similar_manifold and similar_reasoning:
+						for first_match in weights_similar_manifold:
+							w, idx = parameters[first_match]
+						for sec_match in similar_reasoning:
+							wm, idx = reasoning_params[sec_match]
+						refinement, score = self.outer._cache_relations(w, x)
+						refinement2, score = self.outer._cache_relations(wm, x)
+						
+						evaluator = self.main.dynamic_lyapunov_confidence_evaluator(refinement)
+						evaluator2 = self.main.dynamic_lyapunov_confidence_evaluator(refinement2)
+						if evaluator >= evaluator2:
+							refined, score = refinement, evaluator
+						else:
+							refined, score = refinement2, evaluator2
+						self.outer.reasoning_params["wm_replace"] = refined, score
+						
+					elif bias_similar_manifold and similar_reasoning:
+						for first_match in bias_similar_manifold:
+							b, idx = parameters[first_match]
+						for sec_match in similar_reasoning:
+							wm, idx = reasoning_params[sec_match]
+						refinement, score = self.outer._cache_relations(b, x)
+						refinement2, score = self.outer._cache_relations(wm, x)
+						
+						evaluator = self.main.dynamic_lyapunov_confidence_evaluator(refinement)
+						evaluator2 = self.main.dynamic_lyapunov_confidence_evaluator(refinement2)
+						if evaluator >= evaluator2:
+							refined, score = refinement, evaluator
+						else:
+							refined, score = refinement2, evaluator2
+						self.outer.reasoning_params["wm_replace"] = refined, score						
+					else:
+						self.outer.parameters["w_replace"] = x, geodesic_manifold
+						
+				def process(self):														
+					x = self.x.copy()
+					trainer = self.reasoning_trainer_automation()
+					output = self.logistic_softmax(x)
+					evaluator = self.main.dynamic_lyapunov_confidence_evaluator(output)
+					if evaluator >= self.local_satisfiability:
+						self.local_satisfiability = evaluator
+					else:
+						self.local_satisfiability -= 0.0001
+					if np.isnan(output).any() or not np.isfinite(output).any():
+						output = np.ones_like(x)						
+					return output
+					
+			
+		automation = InternalAutomation(self, [
+		      OutputAutomaton(self),
+		      ])
+	
+		autonomous = automation.process()
+
+		return autonomous
+		
+	def environmental_recalibrator(self, x):
+		constant = 1/137
+		if np.isnan(x).any() or not np.isfinite(x).any():
+			x = np.ones_like(x)
+			
+		parameters = self.parameters
+		silent_killer = False		
+		noise = np.std(x)
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		sigmoid = 1.0 / (1.0 - curvature)
+		ratio = 1.0 + noise / sigmoid 
+		
+		max_threshold = noise / (1.0 + sigmoid)
+		if noise == 0:
+			recalibrator, max_threshold = self.uncertainty_handling_module(x, type='weight')
+			silent_killer = True
+		recalibrator = x.copy()
+		
+		return recalibrator, ratio, max_threshold, silent_killer
+						
+		
+	def meta_definitor(self, x):
+		x = x.copy()
+		constant = 1/137
+		
+		curvature = constant + np.mean(np.abs(np.diff(np.diff(x))))
+		sigmoid = 1.0 / (1.0 - curvature)
+		
+		output, ratio, max_threshold, silent_killer = self.environmental_recalibrator(x)
+
+		noise = self.implicit_noise(output)
+		causal = self.internal_causal_modelling(noise)
+		logistic = self.hierarchical_sub_agent_module(output)
+		if ratio >= max_threshold:
+			if len(causal) > len(x):
+				causal = causal[0]
+			return causal
+		elif silent_killer:
+			if len(logistic) > len(x):
+				logistic = logistic[0]			
+			return logistic
+		else:
+			if len(logistic) > len(x):
+				logistic = logistic[0]						
+			return logistic
+			
+advanced_network = VectorizedTangent(layers=[70, 160, 256, 135, 60], computational_limit=500)				
+		
