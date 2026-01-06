@@ -126,6 +126,12 @@ geometricalseeker is a custom helper seekers that seeks stable divergence, conv,
 
 CellularImbrium Is a Hierarchical Tree that consist of two Networking Layer perceptron and training functions used to determine if a function should return a value, or scalars or not, by using dynamic lyapunov stability, it ensures that the equation remains stable per iteration and score >= stable_equilibrium, the other Functions contains a stable reprogramming function used to reprogram scalars based on the iteration scores, there is also special Nodes that contains A function that calculates all three special nodes that was acquired through hitcins moduli space equation.
 
+
+# VectorizedTangent:
+VectorizedTangent is a Custom Complex Reasoning AI, that was able to perform on both complex noisy environments, including linear, and non linear data, with built in Certainty measurement.
+This AI has Many types of Reasoning, the most dominant one includes epistemic reasoning and causality reasoning and certainty reasoning, with some other capabilities like internal belief reasoning, VectorizedTangent used advanced nested programming logic including geometric calculation and principles based calculation like anisotropy, and entropy measurement, so performance is a bit of a drawback for this AI.
+
+
 # Solo Development History By me (2025- Now):
 - 3 months Ago Foldernet Was successfully Made by me, for 2 months ive refined it to be a purposeful agent for my small game.
 - After FolderNet was created, i realized that conventional Transformer doesnt directly Work and fit with my FolderNet, since it was using Standard Linear Q, K, V. So FolderNet requires attention that works by using geometric learning, FolderNet was then renamed to CellularNet.
